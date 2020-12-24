@@ -5,7 +5,7 @@ import inspect
 import numpy as np
 import pprint
 from typing import Any, List, Optional, Tuple, Union
-from fvcore.transforms.transform import Transform, TransformList
+from detectron2.data.transforms.transform import WrapTransform, TransformList
 
 """
 See "Data Augmentation" tutorial for an overview of the system.
@@ -75,20 +75,20 @@ If arguments are unknown, reimplement `__call__` instead. \
 
 class Augmentation:
     """
-    Augmentation defines (often random) policies/strategies to generate :class:`Transform`
+    Augmentation defines (often random) policies/strategies to generate :class:`WrapTransform`
     from data. It is often used for pre-processing of input data.
 
-    A "policy" that generates a :class:`Transform` may, in the most general case,
+    A "policy" that generates a :class:`WrapTransform` may, in the most general case,
     need arbitrary information from input data in order to determine what transforms
     to apply. Therefore, each :class:`Augmentation` instance defines the arguments
     needed by its :meth:`get_transform` method. When called with the positional arguments,
     the :meth:`get_transform` method executes the policy.
 
-    Note that :class:`Augmentation` defines the policies to create a :class:`Transform`,
+    Note that :class:`Augmentation` defines the policies to create a :class:`WrapTransform`,
     but not how to execute the actual transform operations to those data.
     Its :meth:`__call__` method will use :meth:`AugInput.transform` to execute the transform.
 
-    The returned `Transform` object is meant to describe deterministic transformation, which means
+    The returned `WrapTransform` object is meant to describe deterministic transformation, which means
     it can be re-applied on associated data, e.g. the geometry of an image and its segmentation
     masks need to be transformed together.
     (If such re-application is not needed, then determinism is not a crucial requirement.)
@@ -108,7 +108,7 @@ class Augmentation:
                 if k != "self" and not k.startswith("_"):
                     setattr(self, k, v)
 
-    def get_transform(self, *args) -> Transform:
+    def get_transform(self, *args) -> WrapTransform:
         """
         Execute the policy based on input data, and decide what transform to apply to inputs.
 
@@ -117,7 +117,7 @@ class Augmentation:
                 should exist in the :class:`AugInput` to be used.
 
         Returns:
-            Transform: Returns the deterministic transform to apply to the input.
+            WrapTransform: Returns the deterministic transform to apply to the input.
 
         Examples:
         ::
@@ -144,7 +144,7 @@ class Augmentation:
         """
         raise NotImplementedError
 
-    def __call__(self, aug_input) -> Transform:
+    def __call__(self, aug_input) -> WrapTransform:
         """
         Augment the given `aug_input` **in-place**, and return the transform that's used.
 
@@ -162,7 +162,7 @@ class Augmentation:
         """
         args = _get_aug_input_args(self, aug_input)
         tfm = self.get_transform(*args)
-        assert isinstance(tfm, (Transform, TransformList)), (
+        assert isinstance(tfm, (WrapTransform, TransformList)), (
             f"{type(self)}.get_transform must return an instance of Transform! "
             "Got {type(tfm)} instead."
         )
@@ -217,13 +217,13 @@ def _transform_to_aug(tfm_or_aug):
     Wrap Transform into Augmentation.
     Private, used internally to implement augmentations.
     """
-    assert isinstance(tfm_or_aug, (Transform, Augmentation)), tfm_or_aug
+    assert isinstance(tfm_or_aug, (WrapTransform, Augmentation)), tfm_or_aug
     if isinstance(tfm_or_aug, Augmentation):
         return tfm_or_aug
     else:
 
         class _TransformToAug(Augmentation):
-            def __init__(self, tfm: Transform):
+            def __init__(self, tfm: WrapTransform):
                 self.tfm = tfm
 
             def get_transform(self, *args):
@@ -252,12 +252,12 @@ class AugmentationList(Augmentation):
     def __init__(self, augs):
         """
         Args:
-            augs (list[Augmentation or Transform]):
+            augs (list[Augmentation or WrapTransform]):
         """
         super().__init__()
         self.augs = [_transform_to_aug(x) for x in augs]
 
-    def __call__(self, aug_input) -> Transform:
+    def __call__(self, aug_input) -> WrapTransform:
         tfms = []
         for x in self.augs:
             tfm = x(aug_input)
@@ -309,6 +309,7 @@ class AugInput:
         *,
         boxes: Optional[np.ndarray] = None,
         sem_seg: Optional[np.ndarray] = None,
+        annotations: Optional[list] = None,
     ):
         """
         Args:
@@ -318,13 +319,15 @@ class AugInput:
             boxes (ndarray or None): Nx4 float32 boxes in XYXY_ABS mode
             sem_seg (ndarray or None): HxW uint8 semantic segmentation mask. Each element
                 is an integer label of pixel.
+            annotations (list[dict]): N anno dicts for N img
         """
         _check_img_dtype(image)
         self.image = image
         self.boxes = boxes
         self.sem_seg = sem_seg
+        self.annotations = annotations
 
-    def transform(self, tfm: Transform) -> None:
+    def transform(self, tfm: WrapTransform) -> None:
         """
         In-place transform all attributes of this class.
 
@@ -334,11 +337,13 @@ class AugInput:
         self.image = tfm.apply_image(self.image)
         if self.boxes is not None:
             self.boxes = tfm.apply_box(self.boxes)
+        if self.annotations is not None:
+            self.annotations = tfm.apply_annotations(self.annotations)
         if self.sem_seg is not None:
             self.sem_seg = tfm.apply_segmentation(self.sem_seg)
 
     def apply_augmentations(
-        self, augmentations: List[Union[Augmentation, Transform]]
+        self, augmentations: List[Union[Augmentation, WrapTransform]]
     ) -> TransformList:
         """
         Equivalent of ``AugmentationList(augmentations)(self)``
@@ -346,7 +351,7 @@ class AugInput:
         return AugmentationList(augmentations)(self)
 
 
-def apply_augmentations(augmentations: List[Union[Transform, Augmentation]], inputs):
+def apply_augmentations(augmentations: List[Union[WrapTransform, Augmentation]], inputs):
     """
     Use ``T.AugmentationList(augmentations)(inputs)`` instead.
     """

@@ -9,9 +9,13 @@ import logging
 import numpy as np
 import pycocotools.mask as mask_util
 import torch
+import yaml
+import random
+import os
+import math
 from fvcore.common.file_io import PathManager
 from PIL import Image
-
+import cv2
 from detectron2.structures import (
     BitMasks,
     Boxes,
@@ -39,6 +43,15 @@ __all__ = [
     "create_keypoint_hflip_indices",
     "filter_empty_instances",
     "read_image",
+    "generate_atom_list",
+    "load_cfg",
+    "adjust_scale",
+    "rand_by_rate",
+    "get_inv_tuple_matrix",
+    "get_random_color",
+    "fill_region",
+    "get_paste_point",
+    "compute_crop_box_iou",
 ]
 
 
@@ -176,11 +189,13 @@ def read_image(file_name, format=None):
             supported image modes in PIL or "BGR"; float (0-1 for Y) for YUV-BT.601.
     """
     with PathManager.open(file_name, "rb") as f:
-        image = Image.open(f)
+        try:
+            image = cv2.imread(file_name)
+        except SystemError:
+            print(file_name)
+            return None
 
-        # work around this bug: https://github.com/python-pillow/Pillow/issues/3973
-        image = _apply_exif_orientation(image)
-        return convert_PIL_to_numpy(image, format)
+        return image
 
 
 def check_image_size(dataset_dict, image):
@@ -588,6 +603,173 @@ def build_augmentation(cfg, is_train):
         )
     return augmentation
 
+def generate_atom_list(cfg, is_train):
+    """Read atoms from config, and return a list of Augmentation
+
+    Returns:
+        list[Augmentation]
+    """
+    black_magic_cfg = load_cfg(cfg.DATALOADER.BLACK_MAGIC_CFG)
+    augs = []
+    if is_train:
+        for atom in black_magic_cfg['train_atoms']:
+            kwargs = black_magic_cfg['train_atoms'][atom]
+            augs.append(eval('T.'+atom)(**kwargs))
+    else:
+        for atom in black_magic_cfg['test_atoms']:
+            kwargs = black_magic_cfg['test_atoms'][atom]
+            augs.append(eval('T.'+atom)(**kwargs))
+    
+    return augs
+    
+def load_cfg(cfg_file):
+    """Load a config file, read all params in it and return them as a dic
+    Args:
+        cfg_file: (str) conifg file's path and name
+    
+    Returns:
+        content: (dic) a dic which contains param:value pair.
+    """
+    assert(os.path.exists(cfg_file)), 'assert failed, {} not exists !'.format(cfg_file)
+    with open(cfg_file, 'r') as f:
+        cfg_data = f.read()
+        content = yaml.load(cfg_data, Loader=yaml.FullLoader)
+    
+    return content
+
+def rand_by_rate(rate):
+    '''Determine DO or NOT DO something, by given rate
+    Args:
+    rate: (float) happen prob
+    Returns:
+    true or false
+    '''
+    prob = random.uniform(0, 1)
+    return prob <= rate
+
+def adjust_scale(img_size, min_ratio, max_ratio, balanced_point, balanced_transform, keep_same_size):
+    '''Adjust img's aspect ratio
+    Args:
+        img_size: (list or tuple) img w and h
+        min_ratio: (float) min aspect ratio
+        max_ratio: (float) max aspect ratio
+        balanced_point: (float) the point between min and max
+        balanced_transform: (bool) if true, generate ar between [min,point] or [point,max] with prob 0.5; if false, between [min, max]
+        keep_same_size: (bool) 
+    Returns:
+        (dst_w, dst_h): size to be resized
+    '''
+    #if min<point<max, then let min or max equal point by rate 0.5.   0.5 indicates 'balanced transform'
+    if min_ratio<balanced_point and max_ratio>balanced_point and balanced_transform:
+        if rand_by_rate(0.5):
+            min_ratio = balanced_point
+        else:
+            max_ratio = balanced_point
+    #generate a randn aspect_ratio between [min, max]
+    aspect_ratio = random.uniform(min_ratio, max_ratio)
+    raw_w, raw_h = img_size
+    if keep_same_size:
+        aspect_ratio = math.pow(aspect_ratio, 0.5)
+        dst_w = int(raw_w * aspect_ratio)
+        dst_h = int(raw_h / aspect_ratio)
+    else:
+        dst_w = int(min(raw_w, raw_w*aspect_ratio))
+        dst_h = int(min(raw_h, raw_h/aspect_ratio))
+    
+    if dst_w == 0:
+        dst_w = 1
+    if dst_h == 0:
+        dst_h = 1
+    
+    return [dst_w, dst_h]
+
+def get_inv_tuple_matrix(matrix):
+    '''Given a matirx, 1. compute its inverse matirx; 2. arrange it as a tuple
+    Args:
+    matrix: () rotation matrix computed by opencv
+    Returns:
+    M_inv_tuple: (list) a list contains the first two rows in inverse rotation matrix 
+    '''
+    matrix = np.matrix([[matrix[0,0], matrix[0,1], matrix[0,2]], [matrix[1,0], matrix[1,1], matrix[1,2]], [0,0,1]])
+    M_inv = np.linalg.inv(matrix)
+    M_inv_tuple = (M_inv[0,0], M_inv[0,1], M_inv[0,2], M_inv[1,0], M_inv[1,1], M_inv[1,2])
+
+    return M_inv_tuple
+
+def get_random_color():
+    '''Return a random RGB value
+    '''
+    random_R = random.randint(0, 255)
+    random_G = random.randint(0, 255)
+    random_B = random.randint(0, 255)
+
+    return (random_R, random_G, random_B)
+
+def fill_region(img, box):
+    '''Fill given box region, by pure color or random color
+    
+    Args:
+    img: (PIL.Image) whole img
+    box: (np) region to fill
+    Returns:
+    img: (PIL.Image) img after filled
+    '''
+    #box params
+    left, top, right, bottom = box
+    assert(left<right and top<bottom)
+    #use pure color or not
+    use_pure_color = rand_by_rate(0.5)
+
+    if use_pure_color:
+      if len(img.getbands()) > 1:
+        color = get_random_color()
+        pure_img = Image.new(img.mode, (box[2]-box[0], box[3]-box[1]), color)
+      else:
+        color = random.randint(0, 255)
+        pure_img = Image.new(img.mode, (box[2]-box[0], box[3]-box[1]), color)
+      img.paste(pure_img, box)
+    else:
+      if len(img.getbands()) > 1:
+        random_array = np.random.rand(box[3]-box[1], box[2]-box[0], 3) * 255
+        random_img = Image.fromarray(random_array.astype('uint8')).convert('RGB')
+      else:
+        random_array = np.random.rand(box[3]-box[1], box[2]-box[0]) * 255
+        random_img = Image.fromarray(random_array.astype('uint8')).convert('L')
+      img.paste(random_img, box)
+    
+    return img
+
+def get_paste_point(src_img_size, to_paste_size):
+    '''compute a point, which can be used to paste an img
+    Args:
+    src_img_size: raw img size
+    to_paste_size: to paste img's size
+    Returns:
+    [left, top]: point  can be paste to
+    '''
+    src_w, src_h = src_img_size
+    cropped_w, cropped_h = to_paste_size
+
+    to_paste_left = random.randint(0, max(0, src_w-cropped_w))
+    to_paste_top = random.randint(0, max(0, src_h-cropped_h))
+    
+    return [to_paste_left, to_paste_top]
+
+def compute_crop_box_iou(boxes, crop_box):
+    '''Calc the iou of two set of boxes.
+    The default box order is (xmin, ymin, xmax, ymax).
+    Args:
+      boxes: (np) bounding boxes, sized [num_boxes1, 4].
+      crop_box: (np) crop box, sized [1, 4].
+    Return:
+      (np) iou, size [num_boxes1, num_boxes2].
+    '''
+    crop_box = np.tile(crop_box, (boxes.shape[0], 1))
+    
+    ab = np.stack([boxes, crop_box]).astype('float32')
+    intersect_area = np.maximum(ab[:, :, [2, 3]].min(axis=0) - ab[:, :, [0, 1]].max(axis=0), 0).prod(axis=1)
+    union_area = ((ab[:, :, 2] - ab[:, :, 0]) * (ab[:, :, 3] - ab[:, :, 1])).sum(axis=0) - intersect_area
+    return intersect_area / union_area
 
 build_transform_gen = build_augmentation
 """

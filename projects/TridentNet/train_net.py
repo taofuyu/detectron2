@@ -56,6 +56,7 @@ def main(args):
 
 if __name__ == "__main__":
     args = default_argument_parser().parse_args()
+    args.config_file = '/detectron2/projects/TridentNet/configs/Base-TridentNet-Fast-C4.yaml'
     print("Command Line Args:", args)
     launch(
         main,

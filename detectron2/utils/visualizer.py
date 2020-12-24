@@ -381,7 +381,9 @@ class Visualizer:
             ]
             alpha = 0.8
         else:
-            colors = None
+            colors = []
+            for c in classes:
+                colors.append(self.metadata.thing_colors[c])
             alpha = 0.5
 
         if self._instance_mode == ColorMode.IMAGE_BW:
@@ -546,6 +548,43 @@ class Visualizer:
             self.draw_sem_seg(sem_seg, area_threshold=0, alpha=0.5)
         return self.output
 
+    def draw_black_magic(self, GTs):
+        """
+        Draw instance-level GT after black magic on an image.
+
+        Args:
+            GTs (Instances): GT in an img after doing black magic. Following fields will be used to draw:
+                "gt_boxes", "gt_classes".
+
+        Returns:
+            output (VisImage): image object with visualizations.
+        """
+        boxes = GTs.gt_boxes if GTs.has("gt_boxes") else None
+        classes = GTs.gt_classes if GTs.has("gt_classes") else None
+        labels = _create_text_labels(classes, None, self.metadata.get("thing_classes", None))
+
+        colors = []
+        for c in classes:
+            colors.append(self.metadata.thing_colors[c])
+        alpha = 0.5
+        #classes = GTs.gt_classes if GTs.has("gt_classes") else None
+
+        if self._instance_mode == ColorMode.IMAGE_BW:
+            self.output.img = self._create_grayscale_image(
+                (predictions.pred_masks.any(dim=0) > 0).numpy()
+            )
+            alpha = 0.3
+
+        self.overlay_instances(
+            masks=None,
+            boxes=boxes,
+            labels=labels,
+            keypoints=None,
+            assigned_colors=colors,
+            alpha=alpha,
+        )
+        return self.output
+    
     def overlay_instances(
         self,
         *,
@@ -668,7 +707,7 @@ class Visualizer:
                         text_pos = (x0, y1)
 
                 height_ratio = (y1 - y0) / np.sqrt(self.output.height * self.output.width)
-                lighter_color = self._change_color_brightness(color, brightness_factor=0.7)
+                lighter_color = self._change_color_brightness(color, brightness_factor=1)
                 font_size = (
                     np.clip((height_ratio - 0.02) / 0.08 + 1, 1.2, 2)
                     * 0.5
@@ -854,8 +893,7 @@ class Visualizer:
         width = x1 - x0
         height = y1 - y0
 
-        linewidth = max(self._default_font_size / 4, 1)
-
+        linewidth = max(self._default_font_size / 6, 1) 
         self.output.ax.add_patch(
             mpl.patches.Rectangle(
                 (x0, y0),

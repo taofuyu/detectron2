@@ -5,17 +5,13 @@ Implement many useful :class:`Augmentation`.
 """
 import numpy as np
 import sys
-from fvcore.transforms.transform import (
-    BlendTransform,
-    CropTransform,
-    HFlipTransform,
-    NoOpTransform,
-    VFlipTransform,
-)
+import random
+import copy
+import math
 from PIL import Image
-
+from detectron2.data.detection_utils import adjust_scale, rand_by_rate, get_inv_tuple_matrix, get_random_color, get_paste_point
 from .augmentation import Augmentation, _transform_to_aug
-from .transform import ExtentTransform, ResizeTransform, RotationTransform
+from .transform import *
 
 __all__ = [
     "RandomApply",
@@ -30,6 +26,15 @@ __all__ = [
     "Resize",
     "ResizeShortestEdge",
     "RandomCrop_CategoryAreaConstraint",
+    "EdgeFilter",
+    "ResizeRatio",
+    "BoxShear",
+    "BoxContrast",
+    "BoxErase",
+    "Noise",
+    "Mosaic",
+    "BoxAttentionCrop",
+    "BoxMove",
 ]
 
 
@@ -178,7 +183,7 @@ class RandomRotation(Augmentation):
     number of degrees counter clockwise around the given center.
     """
 
-    def __init__(self, angle, expand=True, center=None, sample_style="range", interp=None):
+    def __init__(self, prob, angle, expand=True, center=None, sample_style="range", interp=None):
         """
         Args:
             angle (list[float]): If ``sample_style=="range"``,
@@ -203,27 +208,31 @@ class RandomRotation(Augmentation):
         self._init(locals())
 
     def get_transform(self, image):
-        h, w = image.shape[:2]
-        center = None
-        if self.is_range:
-            angle = np.random.uniform(self.angle[0], self.angle[1])
-            if self.center is not None:
-                center = (
-                    np.random.uniform(self.center[0][0], self.center[1][0]),
-                    np.random.uniform(self.center[0][1], self.center[1][1]),
-                )
+        do = self._rand_range() < self.prob
+        if do:
+            h, w = image.shape[:2]
+            center = None
+            if self.is_range:
+                angle = np.random.uniform(self.angle[0], self.angle[1])
+                if self.center is not None:
+                    center = (
+                        np.random.uniform(self.center[0][0], self.center[1][0]),
+                        np.random.uniform(self.center[0][1], self.center[1][1]),
+                    )
+            else:
+                angle = np.random.choice(self.angle)
+                if self.center is not None:
+                    center = np.random.choice(self.center)
+
+            if center is not None:
+                center = (w * center[0], h * center[1])  # Convert to absolute coordinates
+
+            if angle % 360 == 0:
+                return NoOpTransform()
+
+            return RotationTransform(h, w, angle, expand=self.expand, center=center, interp=self.interp)
         else:
-            angle = np.random.choice(self.angle)
-            if self.center is not None:
-                center = np.random.choice(self.center)
-
-        if center is not None:
-            center = (w * center[0], h * center[1])  # Convert to absolute coordinates
-
-        if angle % 360 == 0:
             return NoOpTransform()
-
-        return RotationTransform(h, w, angle, expand=self.expand, center=center, interp=self.interp)
 
 
 class RandomCrop(Augmentation):
@@ -381,7 +390,7 @@ class RandomContrast(Augmentation):
     See: https://pillow.readthedocs.io/en/3.0.x/reference/ImageEnhance.html
     """
 
-    def __init__(self, intensity_min, intensity_max):
+    def __init__(self, prob, intensity_min, intensity_max):
         """
         Args:
             intensity_min (float): Minimum augmentation
@@ -391,8 +400,12 @@ class RandomContrast(Augmentation):
         self._init(locals())
 
     def get_transform(self, image):
-        w = np.random.uniform(self.intensity_min, self.intensity_max)
-        return BlendTransform(src_image=image.mean(), src_weight=1 - w, dst_weight=w)
+        do = self._rand_range() < self.prob
+        if do:
+            w = np.random.uniform(self.intensity_min, self.intensity_max)
+            return BlendTransform(src_image=image.mean(), src_weight=1 - w, dst_weight=w)
+        else:
+            return NoOpTransform()
 
 
 class RandomBrightness(Augmentation):
@@ -407,7 +420,7 @@ class RandomBrightness(Augmentation):
     See: https://pillow.readthedocs.io/en/3.0.x/reference/ImageEnhance.html
     """
 
-    def __init__(self, intensity_min, intensity_max):
+    def __init__(self, prob, intensity_min, intensity_max):
         """
         Args:
             intensity_min (float): Minimum augmentation
@@ -417,8 +430,12 @@ class RandomBrightness(Augmentation):
         self._init(locals())
 
     def get_transform(self, image):
-        w = np.random.uniform(self.intensity_min, self.intensity_max)
-        return BlendTransform(src_image=0, src_weight=1 - w, dst_weight=w)
+        do = self._rand_range() < self.prob
+        if do:
+            w = np.random.uniform(self.intensity_min, self.intensity_max)
+            return BlendTransform(src_image=0, src_weight=1 - w, dst_weight=w)
+        else:
+            return NoOpTransform()
 
 
 class RandomSaturation(Augmentation):
@@ -477,3 +494,469 @@ class RandomLighting(Augmentation):
         return BlendTransform(
             src_image=self.eigen_vecs.dot(weights * self.eigen_vals), src_weight=1.0, dst_weight=1.0
         )
+
+
+class EdgeFilter(Augmentation):
+    def __init__(self, prob, min_radius, max_radius):
+        super().__init__()
+        self._init(locals())
+    
+    def get_transform(self, image):
+        do = self._rand_range() < self.prob
+        if do:
+            radius = random.uniform(self.min_radius, self.max_radius)
+            return EdgeFilterTransform(radius=radius)
+        else:
+            return NoOpTransform()
+
+
+class ResizeRatio(Augmentation):
+    """Generate a randn aspect_ratio between [min, point] or [point, max], then resize the img 
+    """
+    def __init__(self, prob, min_ratio, max_ratio, balanced_point, balanced_transform, keep_same_size):
+        """Args:
+        prob: (float) do or not prob
+        min_ratio: (float) min aspect ratio
+        max_ratio: (float) max aspect ratio
+        balanced_point: (float) the point between min and max
+        balanced_transform: (bool) if true, generate ar between [min,point] or [point,max] with prob 0.5; if false, between [min, max]
+        keep_same_size: (bool) 
+        """
+        super().__init__()
+        self._init(locals())
+
+    def get_transform(self, image):
+        do = rand_by_rate(self.prob)
+        if do:
+            h, w = image.shape[:2]
+            dst_w, dst_h = adjust_scale((w,h), self.min_ratio, self.max_ratio, self.balanced_point, self.balanced_transform, self.keep_same_size)
+            return ResizeTransform(h, w, dst_h, dst_w)
+        else:
+            return NoOpTransform()
+
+
+class BoxShear(Augmentation):
+    """Shear some boxes along x or y axis
+    """
+    def __init__(self, shear_prob_x, shear_prob_y, shear_min_len_x, shear_max_len_x, shear_min_len_y, shear_max_len_y, balanced_transform, balanced_point, min_area_rate):
+        """Args:
+        shear_prob_x: (list) rate to shear along x axis(for class0 - classN)
+        shear_prob_y: (list) rate to shear along y axis(for class0 - classN)
+        shear_min_len_x: (int) the min value for shear along x axis
+        shear_max_len_x: (int) the max value for shear along x axis
+        shear_min_len_y: (int) the min value for shear along y axis
+        shear_max_len_y: (int) the max value for shear along y axis
+        balanced_transform: (bool) if true, generate shear value between [min,point] or [point,max] with prob 0.5; if false, between [min, max]
+        balanced_point: (int) the point between min and max
+        min_area_rate:(float):
+        """
+        super().__init__()
+        self._init(locals())
+    
+    def get_transform(self, image, annotations):
+        along_x_info = []
+        along_y_info = []
+        #loop each gt box, then decide whether do shear by its category and prob 
+        for anno_idx, anno in enumerate(annotations):
+            do_shear_x = rand_by_rate(self.shear_prob_x[anno["category_id"]])
+            do_shear_y = rand_by_rate(self.shear_prob_y[anno["category_id"]])
+            box_w = anno["bbox"][2] - anno["bbox"][0]
+            box_h = anno["bbox"][3] - anno["bbox"][1]
+            if do_shear_x:
+                #compute shear params
+                # compute shear length along x axis
+                real_shear_min_len_x = self.shear_min_len_x
+                real_shear_max_len_x = self.shear_max_len_x
+                if self.shear_min_len_x<self.balanced_point and self.shear_max_len_x>self.balanced_point and self.balanced_transform:
+                    if rand_by_rate(0.5):
+                        real_shear_min_len_x = self.balanced_point
+                    else:
+                        real_shear_max_len_x = self.balanced_point
+                shear_len_x = random.uniform(real_shear_min_len_x, real_shear_max_len_x)
+                x_axis_shift = abs(shear_len_x) * box_h
+                new_w = box_w + int(round(x_axis_shift))
+                # compute rotation matrix
+                # why M looks like this? transform is: new_x=x+shear_len_x*y, new_y=y. each pixel will move a distance(x_axis_shift).
+                # if shear_len_x is negtive, pixel will be out of new img(new_w, h), we have to do a translation(x_axis_shift) to move it back. 
+                M = np.array([[1, shear_len_x, x_axis_shift if shear_len_x < 0 else 0], [0, 1, 0]])
+                M = get_inv_tuple_matrix(M)
+                color = get_random_color()
+
+                along_x_info.append({"anno_idx":anno_idx, "M":M, "new_w":new_w, "color":color})
+            if do_shear_y:
+                #compute shear params
+                real_shear_min_len_y = self.shear_min_len_y
+                real_shear_max_len_y = self.shear_max_len_y
+                if self.shear_min_len_y<self.balanced_point and self.shear_max_len_y>self.balanced_point and self.balanced_transform:
+                    if rand_by_rate(0.5):
+                        real_shear_min_len_y = self.balanced_point
+                    else:
+                        real_shear_max_len_y = self.balanced_point
+                shear_len_y = random.uniform(real_shear_min_len_y, real_shear_max_len_y)
+                y_axis_shift = abs(shear_len_y) * box_w
+                new_h = box_h + int(round(y_axis_shift))
+                M = np.array([[1, 0, 0], [shear_len_y, 1, y_axis_shift if shear_len_y < 0 else 0]])
+                M = get_inv_tuple_matrix(M)
+                color = get_random_color()
+
+                along_y_info.append({"anno_idx":anno_idx, "M":M, "new_h":new_h, "color":color})
+
+        if len(along_x_info)==0 and len(along_y_info)==0:
+            return NoOpTransform()
+        else:
+            return BoxShearTransform(along_x_info, along_y_info, annotations)
+
+
+class BoxContrast(Augmentation):
+    """Do contrast to some boxes
+    """
+    def __init__(self, prob, side_rate_w, side_rate_h, left_side_upper_bound, right_side_lower_bound):
+        """
+        prob: (list) rate to do contrast(for class0 - classN)
+        side_rate_w: (float) decide whether pick a random region along width
+        side_rate_h: (float) decide whether pick a random region along height
+        left_side_upper_bound: (float) the max value for random pick, for left side
+        right_side_lower_bound: (float) the min value for random pick, for right side
+        """
+        super().__init__()
+        self._init(locals())
+    
+    def get_transform(self, image, annotations):
+        invert_region = []
+        for anno_idx, anno in enumerate(annotations):
+            do = rand_by_rate(self.prob[anno["category_id"]])
+            if do:
+                side_w_do = rand_by_rate(self.side_rate_w)
+                side_h_do = rand_by_rate(self.side_rate_h)
+                bbox = copy.deepcopy(anno["bbox"])
+                box_w = bbox[2] - bbox[0]
+                box_h = bbox[3] - bbox[1]
+                #pick a region along width
+                if side_w_do:
+                    bbox[0] = bbox[0] + box_w*random.uniform(0, self.left_side_upper_bound)
+                    bbox[2] = bbox[2] - box_w*(1-random.uniform(self.right_side_lower_bound, 1))
+                #pick a region along height
+                if side_h_do:
+                    bbox[1] = bbox[1] + box_h*random.uniform(0, self.left_side_upper_bound)
+                    bbox[3] = bbox[3] - box_h*(1-random.uniform(self.right_side_lower_bound, 1))
+                
+                bbox = list(map(int, bbox))
+                invert_region.append(bbox)
+
+        if len(invert_region) == 0:
+            return NoOpTransform()
+        else:
+            return BoxContrastTransform(invert_region)
+
+
+class BoxErase(Augmentation):
+    """Fill a random part of a box.
+    """
+    def __init__(self, prob):
+        """Args:
+        prob: (float) rate to remove a part of box
+        """
+        super().__init__()
+        self._init(locals())
+    
+    def get_transform(self, image, annotations):
+        fill_region = []
+        for anno in annotations:
+            do = rand_by_rate(self.prob)
+            if do:
+                bbox = anno["bbox"]
+                #assert(bbox[0]<bbox[2] and bbox[1]<bbox[3])
+                #compute a region to fill
+                box_w = bbox[2] - bbox[0]
+                box_h = bbox[3] - bbox[1]
+                if box_w<20 or box_h<20:
+                    continue
+
+                region_box = []
+                region_w = random.randint(1, box_w//2)
+                region_h = random.randint(1, box_h//2)
+                region_left = random.randint(1, box_w//2)
+                region_top = random.randint(1, box_h//2)
+
+                region_box.append(region_left + bbox[0])
+                region_box.append(region_top + bbox[1])
+                region_box.append(region_left + bbox[0] + region_w)
+                region_box.append(region_top + bbox[1] + region_h)
+                
+                region_box = list(map(int, region_box))
+                fill_region.append(region_box)
+        
+        if len(fill_region) == 0:
+            return NoOpTransform()
+        else:
+            return BoxEraseTransform(fill_region)
+
+
+class Noise(Augmentation):
+    """Add some noise on img
+    """
+    def __init__(self, prob, min_rate, max_rate):
+        """Args:
+        prob(float): prob to add noise
+        min_rate(float): use to generate how much noise to add
+        max_rate(float): use to generate how much noise to add
+        """
+        super().__init__()
+        self._init(locals())
+
+    def get_transform(self, image):
+        do = rand_by_rate(self.prob)
+        if do:
+            rate = random.uniform(self.min_rate, self.max_rate)
+
+            return NoiseTransform(rate)
+        else:
+            return NoOpTransform()
+
+
+class Mosaic(Augmentation):
+    """Tile img like a mosaic. max_move is adviced to <= 2.  If there is an img A, this func may yield thus result:
+    AA    A     AA
+          A     AA
+    """
+    def __init__(self, prob, max_move):
+        """Args:
+        prob(float): rate to do mosaic
+        max_move(int): max times to do mosaic
+        """
+        super().__init__()
+        self._init(locals())
+    
+    def get_transform(self, image, annotations):
+        mosaic_direction = []
+        for i in range(self.max_move):
+            do = rand_by_rate(self.prob)
+            if not do:
+                continue
+            #mosaic to right or bottom
+            mosaic_right = rand_by_rate(0.5)
+            if mosaic_right:
+                mosaic_direction.append("right")
+            else:
+                mosaic_direction.append("bottom")
+
+        if len(mosaic_direction) == 0:
+            return NoOpTransform()
+        else:
+            return MosaicTransform(mosaic_direction, annotations)
+
+
+class BoxAttentionCrop(Augmentation):
+    """Normal order is 'resize img' -> 'crop img', but raw img maybe too big, resize will cost too much time,
+    thus crop first then resize.
+    """
+    def __init__(self, prob, crop_size, balance_by_cls, largest_max_absolute_area, min_scale, max_scale, balanced_transform, balanced_point, box_resize_info, min_area, max_area, min_area_rate):
+        """
+        prob(float): probility to do this aug
+        crop_size(list): [h, w], just use to compute a temp crop size, the followed Resize aug will really change img to this size
+        balance_by_cls(bool): if true, each category has the same prob to be picked; if false, each box has the same prob to be picked
+        largest_max_absolute_area(int): the area of resized box can not beyond this
+        min_scale(float): if dont do attention crop, use this to change img size
+        max_scale(float): if dont do attention crop, use this to change img size
+        balanced_transform(bool): 
+        balanced_point(float):
+        min_area_rate(float): after crop, box erea < this rate will be removed
+        """
+        super().__init__()
+        self._init(locals())
+
+    def get_transform(self, image, annotations):
+        #remove some boxes
+        #img, boxes, labels = utils.remove_region(img, boxes, labels, min_area, max_area) 
+        old_img_h, old_img_w = image.shape[:2]
+        crop_h, crop_w = self.crop_size
+        new_img_w = 0
+        new_img_h = 0
+        new_crop_w = 0
+        new_crop_h = 0
+        crop_left = 0
+        crop_top = 0
+        random_idx = -1 #which GT box to do attention
+        random_class = -1 #category of this box
+        categories = [anno["category_id"] for anno in annotations]
+        do = rand_by_rate(self.prob) and len(annotations)>0
+
+        #compute crop width and height
+        if do:
+            if self.balance_by_cls:
+                #compute how many defferent classes are contained by this img
+                contain_classes = []
+                for label in categories:
+                    if label not in contain_classes:
+                        contain_classes.append(label)
+                num_classes = len(contain_classes)
+                assert(num_classes > 0)
+                #pick a class with same probility
+                random_idx = random.randint(0, num_classes-1)
+                random_class = contain_classes[random_idx]
+                #pick a GT which is this class
+                contain_classes = []
+                for i, label in enumerate(categories):
+                    if label == random_class:
+                        contain_classes.append(i)
+                random_idx = contain_classes[random.randint(0, len(contain_classes)-1)]
+            else:
+                random_idx = random.randint(0, len(categories)-1)
+                random_class = categories[random_idx]
+            #select the box_resize_info param according to picked class
+            info_idx = 0
+            for i in range(len(self.box_resize_info)):
+                if self.box_resize_info[i]['metric_class_id'] == random_class:
+                    info_idx = i
+                    break
+            #compute crop params according to this box_resize_info
+            max_rescale = self.box_resize_info[info_idx]['max_rescale']
+            target_min_absolute_area = self.box_resize_info[info_idx]['target_min_absolute_area']
+            target_max_absolute_area = self.box_resize_info[info_idx]['target_max_absolute_area']
+            scale_idx = random.randint(0, len(target_min_absolute_area)-1)
+            #random pick an area region
+            target_area = random.uniform(target_min_absolute_area[scale_idx], target_max_absolute_area[scale_idx])
+            raw_area = (annotations[random_idx]["bbox"][2]-annotations[random_idx]["bbox"][0]) * (annotations[random_idx]["bbox"][3]-annotations[random_idx]["bbox"][1])
+            if raw_area == 0:
+                print(annotations[random_idx]["file_name"])
+                assert(False)
+            #final rescale ratio
+            calced_rescale_ratio = target_area / raw_area
+            final_resize_ratio = min(max_rescale, calced_rescale_ratio)
+            #compute new size
+            new_crop_w = min(int(crop_w / math.pow(final_resize_ratio, 0.5)), old_img_w)
+            new_crop_h = min(int(crop_h / math.pow(final_resize_ratio, 0.5)), old_img_h)
+        else:
+            max_scale_rate = -1.
+            assert(self.largest_max_absolute_area>0)
+            #compute the max box area in this img
+            max_box_area = -1.
+            for anno in annotations:
+                max_box_area = max(max_box_area, (anno["bbox"][2]-anno["bbox"][0])*(anno["bbox"][3]-anno["bbox"][1]))
+            
+            if max_box_area > 0:
+                max_scale_rate = pow(self.largest_max_absolute_area/max_box_area, 0.5)
+            else:
+                return NoOpTransform()
+            
+            #compute real scale size
+            real_min_scale = self.min_scale
+            real_max_scale = self.max_scale
+            real_min_scale = min(real_min_scale, max_scale_rate)
+            real_max_scale = min(real_max_scale, max_scale_rate)
+
+            if real_min_scale<self.balanced_point and real_max_scale>self.balanced_point and self.balanced_transform:
+                if rand_by_rate(0.5):
+                    real_min_scale = self.balanced_point
+                else:
+                    real_max_scale = self.balanced_point
+            final_resize_ratio = random.uniform(real_min_scale, real_max_scale)
+            #compute new size
+            new_crop_w = min(int(crop_w / math.pow(final_resize_ratio, 0.5)), old_img_w)
+            new_crop_h = min(int(crop_h / math.pow(final_resize_ratio, 0.5)), old_img_h)
+        
+        #compute crop left and top
+        if old_img_w==new_crop_w and old_img_h==new_crop_h:
+            return NoOpTransform()
+        if do:
+            x_min, y_min, x_max, y_max = annotations[random_idx]["bbox"]
+            #left
+            if new_crop_w < x_max-x_min:
+                crop_left = x_min
+            else:
+                random_left = max(0,int(x_max-new_crop_w))
+                random_right = min(int(x_min), int(old_img_w-new_crop_w))
+                if random_left >= random_right:
+                    return NoOpTransform()
+                crop_left = random.randint(random_left, random_right)
+            #top
+            if new_crop_h < y_max-y_min:
+                crop_top = y_min
+            else:
+                crop_top = random.randint(max(0,int(y_max-new_crop_h)), min(int(y_min), int(old_img_h-new_crop_h))) 
+        else:
+            crop_left = random.randint(0, old_img_w - new_crop_w + 1)
+            crop_top  = random.randint(0, old_img_h - new_crop_h + 1)
+        
+        #check
+        if crop_left+new_crop_w > old_img_w:
+            crop_left = old_img_w - new_crop_w
+        if crop_top+new_crop_h > old_img_h:
+            crop_top = old_img_h - new_crop_h
+
+        return CropTransform(int(crop_left), int(crop_top), int(new_crop_w), int(new_crop_h), self.min_area_rate)
+
+
+class BoxMove(Augmentation):
+    """Copy some boxes and paste them to other region on img
+    """
+    def __init__(self, prob, remove_rate, max_move, min_move_rescale, max_move_rescale, balanced_point, balanced_transform, side_rate):
+        """Args:
+        prob(list): prob to move(for class0 - classN)
+        remove_rate(float): rate to remove this box
+        max_move(int): max times to move one box
+        min_move_rescale(float): after move, rescale one box, refer to min_ratio in atom_resize_ratio
+        max_move_rescale(float): after move, rescale one box, refer to max_ratio in atom_resize_ratio
+        balanced_point(float): the point between min and max
+        balanced_transform(bool): if true, generate ar between [min,point] or [point,max] with prob 0.5; if false, between [min, max]
+        side_rate(float): rate to move one box to its side
+        """
+        super().__init__()
+        self._init(locals())
+    
+    def get_transform(self, image, annotations):
+        img_h, img_w = image.shape[:2]
+        move_info = [] # anno_id:[]
+        moved_once = False
+        for idx, anno in enumerate(annotations):
+            anno_trans_info = {}
+            anno_trans_info["anno_id"] = idx
+            # some classes dont need to move
+            if self.prob[anno["category_id"]] == 0:
+                continue
+
+            just_remove_it = rand_by_rate(self.remove_rate)
+
+            anno_move_info = []
+            for _ in range(self.max_move):
+                do = rand_by_rate(self.prob[anno["category_id"]])
+                if not do:
+                    continue
+                
+                moved_once = True
+                single_move_info = {}
+                single_move_info["raw_box_coor"] = anno["bbox"]
+                # set rescale ratio
+                box_w = int(anno["bbox"][2] - anno["bbox"][0])
+                box_h = int(anno["bbox"][3] - anno["bbox"][1])
+                dst_size = adjust_scale((box_w, box_h), self.min_move_rescale, self.max_move_rescale, self.balanced_point, self.balanced_transform, True)
+                dst_size[0] = min(dst_size[0], img_w)
+                dst_size[1] = min(dst_size[1], img_h)
+                single_move_info["dst_size"] = dst_size
+                # start move process
+                mv_side = rand_by_rate(self.side_rate)
+                #move to side
+                to_paste_point = [-1, -1] # left top
+                if mv_side:
+                    if rand_by_rate(0.5): #top
+                        to_paste_point[0] = max(0, anno["bbox"][0]-(dst_size[0]-box_w)/2)
+                        to_paste_point[1] = max(0, anno["bbox"][1]-dst_size[1])
+                    else: #bottom
+                        to_paste_point[0] = max(0, anno["bbox"][0]-(dst_size[0]-box_w)/2)
+                        to_paste_point[1] = min(anno["bbox"][3], img_h-dst_size[1])
+                #move to anywhere
+                else:
+                    to_paste_point = get_paste_point((img_w, img_h), dst_size)
+                
+                single_move_info["to_paste_point"] = to_paste_point
+
+                anno_move_info.append(single_move_info)
+            
+            anno_trans_info["anno_move_info"] = anno_move_info
+        
+            move_info.append(anno_trans_info)
+        
+        if not moved_once:
+            return NoOpTransform()
+        else:
+            return BoxMoveTransform(move_info)
