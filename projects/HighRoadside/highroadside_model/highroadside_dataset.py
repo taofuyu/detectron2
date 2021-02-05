@@ -17,6 +17,26 @@ import cv2
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.structures.boxes import BoxMode
 
+def check_gt_box(annos, file_name):
+    for anno in annos:
+        #zero
+        if anno["bbox"][0] == 0 and anno["bbox"][1] == 0 and anno["bbox"][2] == 0 and anno["bbox"][3] == 0:
+            print("{}, in-valid gt box, check it".format(file_name))
+            print(anno["bbox"])
+            assert(False)
+        #neg
+        if anno["bbox"][0] < 0 or anno["bbox"][1] < 0 or anno["bbox"][2] < 0 or anno["bbox"][3] < 0:
+            print("{}, in-valid gt box, check it".format(file_name))
+            print(anno["bbox"])
+            assert(False)
+        #big small
+        if anno["bbox"][0] > anno["bbox"][2] or anno["bbox"][1] > anno["bbox"][3]:
+            print("{}, in-valid gt box, check it".format(file_name))
+            print(anno["bbox"])
+            assert(False)
+    #same box
+
+
 def highroadside_dataset_function(img_list):
     '''
     Use img_list_file to generate a stdandard detectron2 data list 
@@ -59,6 +79,8 @@ def highroadside_dataset_function(img_list):
 
             annotations.append(anno)
         
+        check_gt_box(annotations, file_name)
+
         img_dict['file_name'] = file_name
         img_dict['width'] = img_w
         img_dict['height'] = img_h

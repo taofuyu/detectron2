@@ -26,23 +26,25 @@ MODEL:
     IN_FEATURES: ["p2", "p3", "p4", "p5", "p6"]
   PIXEL_MEAN: [0, 0, 0]
   PIXEL_STD: [0.00392156862745098, 0.00392156862745098, 0.00392156862745098]
-  #WEIGHTS: "/detectron2/projects/HighRoadside/output/model_0034999.pth"
+  #WEIGHTS: "/detectron2/projects/HighRoadside/output/model_0036999.pth"
 DATASETS:
   TRAIN: ("highroadside_dataset_train",) #"mix_dataset_train", )
   TEST: ("highroadside_dataset_val",) #"mix_dataset_val", )
 DATALOADER:
-  NUM_WORKERS: 1
+  NUM_WORKERS: 4
   SAMPLER_TRAIN: "TrainingSampler"
+  FILTER_EMPTY_ANNOTATIONS: False
   BLACK_MAGIC_CFG: "/detectron2/projects/HighRoadside/configs/H85_black.yaml"
-  SAVE_BLACK_MAGIC_PATH: "/detectron2/datasets/high_roadside/black_magic/"
+  SAVE_BLACK_MAGIC_PATH: "" #"/detectron2/datasets/high_roadside/black_magic/"
 SOLVER:
   IMS_PER_BATCH: 60
-  BASE_LR: 0.1
-  STEPS: (2300, 3200, 3800)
-  MAX_ITER: 4000
+  BASE_LR: 0.05
+  STEPS: (23000, 32000, 38000)
+  MAX_ITER: 40000
   WEIGHT_DECAY: 0.0005
   LR_SCHEDULER_NAME: "WarmupMultiStepLR"
-  WARMUP_ITERS: 100
+  WARMUP_ITERS: 1000
+  CHECKPOINT_PERIOD: 1000
 INPUT:
   FORMAT: "BGR"
 TEST:

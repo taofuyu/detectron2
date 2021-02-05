@@ -59,7 +59,7 @@ class WrapTransform(Transform):
         for i,box in enumerate(boxes):
             annotations[i]["bbox"] = box
 
-        annotations = [annotations[i] for i,anno in enumerate(annotations) if (anno["bbox"][0]<anno["bbox"][2] and anno["bbox"][1]<anno["bbox"][3])]
+        annotations = [annotations[i] for i,anno in enumerate(annotations) if (int(anno["bbox"][0])<int(anno["bbox"][2]) and int(anno["bbox"][1])<int(anno["bbox"][3]))]
         return annotations
 
 
@@ -503,7 +503,7 @@ class CropTransform(WrapTransform):
         raw_area = (boxes[:,2]-boxes[:,0]) * (boxes[:,3]-boxes[:,1])
         if boxes.ndim == 1:
             boxes = boxes.reshape(-1, 4)
-        #compute iou mask, and adjust labels
+        #compute iou mask
         crop_box = np.array([self.x0, self.y0, self.x0+self.w, self.y0+self.h])
         iou = compute_crop_box_iou(boxes, crop_box)
         mask = iou > 0
@@ -528,20 +528,31 @@ class CropTransform(WrapTransform):
         inter_boxes[:,2] = inter_boxes[:,2] - crop_box[:,0]
         inter_boxes[:,3] = inter_boxes[:,3] - crop_box[:,1]
 
-        #new box area
+        #box area on crop img
         new_area = (inter_boxes[:,2]-inter_boxes[:,0]) * (inter_boxes[:,3]-inter_boxes[:,1])
-        mask = new_area/raw_area > self.min_area_rate
-        inter_boxes = inter_boxes[mask]
+        crop_box_area = self.w * self.h
+        mask = (new_area/raw_area > self.min_area_rate) & (abs(new_area - crop_box_area) > 5)
+        
+        #find boxes whose new_area==crop_box_area
+        area_idx = []
+        for i, area in enumerate(new_area):
+            if abs(area - crop_box_area) < 0.01:
+                area_idx.append(i)
+        #only retain the smallest one
+        smallest = 10000000
+        smallest_idx = -1
+        for idx in area_idx:
+            if smallest > raw_area[idx]:
+                smallest = raw_area[idx]
+                smallest_idx = idx
+        for idx in area_idx:
+            if not idx==smallest_idx:
+                mask[idx] = False
 
-        if len(inter_boxes) >3:
-            if inter_boxes[0][0] == inter_boxes[1][0] and inter_boxes[0][1] == inter_boxes[1][1] and inter_boxes[0][2] == inter_boxes[1][2] and inter_boxes[0][3] == inter_boxes[1][3]:
-                print(inter_boxes)
-                print(boxes)
-                print(crop_box)
-                assert(False)
+        inter_boxes = inter_boxes[mask]
+        
         #remove some annos
         annotations = [annotations[i] for i in range(len(annotations)) if mask[i]]
-
         #update coor
         for i in range(len(annotations)):
             annotations[i]["bbox"] = inter_boxes[i]

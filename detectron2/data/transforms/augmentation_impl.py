@@ -817,9 +817,6 @@ class BoxAttentionCrop(Augmentation):
             #random pick an area region
             target_area = random.uniform(target_min_absolute_area[scale_idx], target_max_absolute_area[scale_idx])
             raw_area = (annotations[random_idx]["bbox"][2]-annotations[random_idx]["bbox"][0]) * (annotations[random_idx]["bbox"][3]-annotations[random_idx]["bbox"][1])
-            if raw_area == 0:
-                print(annotations[random_idx]["file_name"])
-                assert(False)
             #final rescale ratio
             calced_rescale_ratio = target_area / raw_area
             final_resize_ratio = min(max_rescale, calced_rescale_ratio)

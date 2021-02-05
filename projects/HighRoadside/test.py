@@ -13,6 +13,11 @@ from detectron2.utils.logger import setup_logger
 
 from predictor import VisualizationDemo
 
+"""
+@usage
+CUDA_VISIBLE_DEVICES=0 python test.py --config-file=/path/H85_train.yaml --input=/path/*.jpg --output=/path/
+"""
+
 # constants
 WINDOW_NAME = "COCO detections"
 

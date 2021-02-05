@@ -5,9 +5,9 @@
 HighRoadside Training Script.
 
 @train:
-CUDA_VISIBLE_DEVICES=0,1,2 python train_net.py --config-file=/detectron2/projects/HighRoadside/configs/H85_train.yaml --num-gpus=3 
+CUDA_VISIBLE_DEVICES=0,1,2 python train_net.py --config-file=/detectron2/projects/HighRoadside/configs/H85_train.yaml --num-gpus=3 --resume
 @test:
-TODO
+CUDA_VISIBLE_DEVICES=0 python test.py --config-file=/path/H85_train.yaml --input=/path/*.jpg --output=/path/
 @compute metrics:
 TODO
 """
@@ -164,22 +164,20 @@ def do_train(cfg, model, resume=False):
         else []
     )
 
-    #dataset/mapper/augs/sampler are done during building data_loader
+    #dataset|mapper|augs|sampler are done during building data_loader
     atoms = generate_atom_list(cfg, True)
     black_magic_mapper = BlackMagicMapper(cfg, is_train=True, augmentations=atoms)
     data_loader = build_detection_train_loader(cfg, black_magic_mapper)
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
-            # if cfg.DATALOADER.SAVE_BLACK_MAGIC_PATH != "":
-            #     save_data_to_disk(cfg, data)
+            if cfg.DATALOADER.SAVE_BLACK_MAGIC_PATH != "":
+                save_data_to_disk(cfg, data)
             iteration = iteration + 1
             storage.step()
 
             loss_dict = model(data)
             losses = sum(loss_dict.values())
-            if not torch.isfinite(losses).all():
-                save_data_to_disk(cfg, data)
             assert torch.isfinite(losses).all(), loss_dict
 
             loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}
