@@ -137,7 +137,7 @@ def parse_xml(xml_file, class_map):
         box = []
         name = each_object.find('name').text
         name = correct_name(name, xml_file)
-        if name=="ignore":
+        if (name=="ignore") or (name not in class_map.keys()):
             continue
         bndbox = each_object.find('bndbox')
 

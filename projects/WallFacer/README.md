@@ -203,9 +203,9 @@ double_test_imglist.txt
 模型系列: H
 预测类别: 0plate  1head  2tail  3car  4side_window   5window  6roof  7cycle
 场景特点: 有同侧、异侧、垂直三种视角，车辆之间遮挡严重，远端四车位极端遮挡(只剩车顶)，场景内目标数量众多，误检要少
-训练构成: 更新时间`2021.2.6`，1batch=(14*H1M数据 + 24*其他数据)*3卡
-其中，H1M数据: 1*patch_one + 1*patch_three + 1*patch_four + 1*patch_songli + 1*patch_haikang + 1*patch_vz_roof
-其中，其他数据: 1*出入口(出入口内部重复次数?) + 10*CityScapes + 10*COCO + 20*(road1.5k + road2.5k) + 10*(road_R + road_R_A) + 20*wuxi
+训练构成: 更新时间`2021.3.4`，1batch=(14*H1M数据 + 24*其他数据)*3卡
+其中，H1M数据: 见H98_coonfig.yaml
+其中，其他数据: 见H98_coonfig.yaml
 
 3. R3/R4/RX
 模型系列: X

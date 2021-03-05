@@ -8,7 +8,7 @@ from detectron2.utils.visualizer import Visualizer
 
 from tools.image_reader import ImageReader
 from tools.project_model import *
-from tools.base_func import get_wenxin_arm_result
+from tools.base_func import get_wenxin_arm_result, parse_xml
 import cv2
 import os
 import io
@@ -26,6 +26,13 @@ class WallBreaker:
         self.save_img_path = cfg["save_img_path"]
         self.offset = 1.0
         self.color = cfg["color"]
+
+        self.class_map = {}
+        for cls in self.class_to_test:
+            self.class_map[cls] = cls
+
+        if not os.path.exists(self.save_img_path):
+            os.makedirs(self.save_img_path)
 
     def compute_det_metrics(self, img_list, result_on_dataset):
         #init
@@ -110,8 +117,18 @@ class WallBreaker:
         for each_cls in self.class_to_test:
             all_class_gt[each_cls] = {"box_gt":[], "count_gt":[]}
 
-        #load json
         img_format = img_path[-3:]
+        #load xml
+        if os.path.exists(img_path.replace(img_format, "xml")):#read xml and return
+            _, xyxy_boxes = parse_xml(img_path.replace(img_format, "xml"), self.class_map)
+            for box in xyxy_boxes:
+                each_cls = box[-1]
+                all_class_gt[each_cls]["box_gt"].append(box[0:-1])
+                all_class_gt[each_cls]["count_gt"].append(0)
+            
+            return all_class_gt
+
+        #load json
         anno = img_path.replace(img_format, 'json')
         if not os.path.exists(anno):
             print("anno {} not exist".format(anno))
@@ -160,7 +177,7 @@ class WallBreaker:
 
             vis_output = vis.draw_box(box_coord=box, alpha=1, edge_color=self.color[classnames[i]])
             text = "{},{:.4f}".format(classnames[i], scores[i]) 
-            vis_output = vis.draw_text(text=text, position=[x_min, max(0, y_min-5)], color=self.color[classnames[i]])
+            vis_output = vis.draw_text(text=text, position=[x_min, max(0, y_min-5)], font_size=10, color=self.color[classnames[i]])
 
         img_name = img_path.split("/")[-1]
         vis_output.save(os.path.join(self.save_img_path, img_name))
@@ -193,13 +210,13 @@ class WallBreaker:
 
 if __name__ == "__main__":
     #load cfg
-    test_cfg = "/data/taofuyu/tao_dataset/dataset_config/test_R3.yaml"
+    test_cfg = "/data/taofuyu/models/dataset_config/test_R3.yaml"
     cfg = load_cfg(test_cfg)
     wall_breaker = WallBreaker(cfg)
 
     #load model
     #replace this for different project
-    model = R3Model(cfg)
+    model = DetectionModel(cfg)
 
     #read img
     image_reader = ImageReader(cfg)

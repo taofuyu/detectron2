@@ -14,7 +14,7 @@ import time
 from .extract_box import BoxExtractor
 
 
-__all__ = ["BaseModel", "R3Model"]
+__all__ = ["BaseModel", "DetectionModel"]
 
 class BaseModel:
     def __init__(self, cfg):
@@ -42,7 +42,7 @@ class BaseModel:
         return None
 
 
-class R3Model(BaseModel):
+class DetectionModel(BaseModel):
     def __init__(self, cfg):
         super().__init__(cfg)
         caffe.set_mode_gpu()
