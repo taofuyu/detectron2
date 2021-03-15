@@ -25,6 +25,8 @@ def correct_name(name, file):
         return 'cycle'
     if name == 'roof':
         return 'roof'
+    if name == 'ear':
+        return 'ear'
     if name in ['side_window', 's']:
         return 'side_window'
     if name in ['window', 'w', 'eewindow', 'windoww']:
@@ -35,6 +37,17 @@ def correct_name(name, file):
     print(file)
     assert(False)
 
+def check_box(xml_file, box):
+    if box[0]==0 and box[1]==0 and box[2]==0 and box[3]==0:
+        print("{} all labels==0 , check it".format(xml_file))
+        assert(False)
+    if box[0]<0 or box[1]<0 or box[2]<0 or box[3]<0:
+        print("{} label < 0 , check it".format(xml_file))
+        assert(False)
+    if box[0]>box[2] or box[1]>box[3]:
+        print("{} label is wrong, check it".format(xml_file))
+        assert(False)
+    
 
 #read boxes from txt file and cvt to a dict
 def cvt_to_dict_style(box_txt_f):
@@ -100,7 +113,7 @@ def cvt_to_dict_style(box_txt_f):
 
     return boxes
 
-def decode_xinjie_box(xinjie_box, imgWidth, imgHeight):
+def decode_xinjie_box(path, xinjie_box, imgWidth, imgHeight):
     X_c = float(xinjie_box[0])
     Y_c = float(xinjie_box[1])
     W_c = float(xinjie_box[2])
@@ -110,6 +123,16 @@ def decode_xinjie_box(xinjie_box, imgWidth, imgHeight):
     minGtY = int((2.0*Y_c*(imgHeight-1.0) + 1.0 - H_c*(imgHeight-1))/ 2.0)
     maxGtX = int((2.0*X_c*(imgWidth-1.0) - 1.0 + W_c*(imgWidth-1)) / 2.0)
     maxGtY = int((2.0*Y_c*(imgHeight-1.0) - 1.0 + H_c*(imgHeight-1))/ 2.0)
+    
+    if minGtX==0 and minGtY==0 and maxGtX==0 and maxGtY==0:
+        print("{} has wrong label".format(path))
+        return [-1,-1,-1,-1]
+    if minGtX<0 or minGtY<0 or maxGtX<0 or maxGtY<0:
+        print("{} has wrong label".format(path))
+        return [-1,-1,-1,-1]
+    if minGtX>maxGtX or minGtY>maxGtY:
+        print("{} has wrong label".format(path))
+        return [-1,-1,-1,-1]
 
     return [minGtX, minGtY, maxGtX, maxGtY]
 
@@ -150,6 +173,16 @@ def parse_xml(xml_file, class_map):
         y_min=min(height-1.,max(0.,y_min-1.))
         x_max=min(width-1.,max(0.,x_max-1.))
         y_max=min(height-1.,max(0.,y_max-1.))
+
+        if x_min==0 and y_min==0 and x_max==0 and y_max==0:
+            print("{} has wrong label".format(xml_file))
+            continue
+        if x_min<0 or y_min<0 or x_max<0 or y_max<0:
+            print("{} has wrong label".format(xml_file))
+            continue
+        if x_min>x_max or y_min>y_max:
+            print("{} has wrong label".format(xml_file))
+            continue
 
         xyxy_boxes.append([int(x_min), int(y_min), int(x_max), int(y_max), class_map[name]])
 
@@ -197,6 +230,16 @@ def parse_json(json_file, class_map):
         x_max=min(width-1.,max(0.,x_max-1.))
         y_max=min(height-1.,max(0.,y_max-1.))
 
+        if x_min==0 and y_min==0 and x_max==0 and y_max==0:
+            print("{} has wrong label".format(json_file))
+            continue
+        if x_min<0 or y_min<0 or x_max<0 or y_max<0:
+            print("{} has wrong label".format(json_file))
+            continue
+        if x_min>x_max or y_min>y_max:
+            print("{} has wrong label".format(json_file))
+            continue
+
         xyxy_boxes.append([int(x_min), int(y_min), int(x_max), int(y_max), class_map[name]])
 
         box.append((x_min+x_max)*0.5/(width-1.))
@@ -213,7 +256,7 @@ def parse_json(json_file, class_map):
 def get_wenxin_arm_result(item, width, height, folder_name):
     detections = {"scores":[], "classnames":[], "boxes":[]}
     real_txt = item.replace("plate_test_dataset", folder_name) + ".txt"
-    with open(real_txt, "r") as f:
+    with io.open(real_txt, "r", encoding="gb2312") as f:
         all_lines = f.readlines()
     plate_cnt = 0
     for line in all_lines:
@@ -221,21 +264,20 @@ def get_wenxin_arm_result(item, width, height, folder_name):
         if "plate" in line:
             # plate,0,rect_xywh(495,666,257,151)
             coor = line.replace("plate,"+str(plate_cnt)+",rect_xywh(", "").replace(")", "")
-            x_min = int(coor.split(",")[0])
-            y_min = int(coor.split(",")[1])
-            w = int(coor.split(",")[2])
-            h = int(coor.split(",")[3])
-            x_max = x_min + w -1
-            y_max = y_min + h -1
-            #[x_min, y_min, x_max, y_max] is on 2304 1296.
-            x_min = x_min * (float(width) / 2304.0)
-            x_max = x_max * (float(width) / 2304.0)
-            y_min = y_min * (float(height) / 1296.0)
-            y_max = y_max * (float(height) / 1296.0)
+            x_min = float(coor.split(",")[0])
+            y_min = float(coor.split(",")[1])
+            w = float(coor.split(",")[2])
+            h = float(coor.split(",")[3])
+            
+            #return to abs coor
+            left = width * x_min
+            top = height * x_min
+            right = left + w * width - 1
+            bottom = top + h * height -1
 
             detections["scores"].append(np.array(0.8))
             detections["classnames"].append("plate")
-            detections["boxes"].append(np.array([x_min, y_min, x_max, y_max]))
+            detections["boxes"].append(np.array([left, top, right, bottom]))
             plate_cnt += 1
         if "ysx_reco_start" in line:
             break

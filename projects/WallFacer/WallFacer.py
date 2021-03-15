@@ -109,8 +109,9 @@ class WallFacer:
                     label = box_line[4 + 5*i]
                     label = class_cvt_map[label]
 
-                    x_min, y_min, x_max, y_max = decode_xinjie_box([x_c,y_c,w,h], img_w, img_h)
-
+                    x_min, y_min, x_max, y_max = decode_xinjie_box(os.path.join(dir, img) ,[x_c,y_c,w,h], img_w, img_h)
+                    if x_min == -1:
+                        continue
                     xywh_boxes.append([x_c, y_c, w, h, label])
                     xyxy_boxes.append([x_min, y_min, x_max, y_max, label])
                 
@@ -196,6 +197,7 @@ class WallFacer:
             det2_imglist = open(cfg["det2_imglist_to_create"], "w+")
 
             for dataset in cfg["merge_list"]:
+                print(dataset)
                 img_list_file = cfg["merge_list"][dataset][0]
                 times = cfg["merge_list"][dataset][1]
             
@@ -293,16 +295,16 @@ if __name__ == "__main__":
     if False:
         class_map = {"plate":0, "headstock":1, "tailstock":2, "car":3, "side_window":4, "window":5, "roof":6, "person":7, "cycle":8}
 
-        img_path = "/data/taofuyu/tao_dataset/det_plate/image/Audi/"
-        xywh_txt_to_create = "/data/taofuyu/tao_dataset/det_plate/gt/xywh/image_Audi_train_imglist.txt"
-        xyxy_txt_to_create = "/data/taofuyu/tao_dataset/det_plate/gt/xyxy/image_Audi_train_imglist.txt"
+        img_path = "/data/taofuyu/tao_dataset/wuxi/masked_wuxi_full_p6/"
+        xywh_txt_to_create = "/data/taofuyu/tao_dataset/wuxi/gt/xywh/masked_wuxi_full_p6_train_imglist.txt"
+        xyxy_txt_to_create = "/data/taofuyu/tao_dataset/wuxi/gt/xyxy/masked_wuxi_full_p6_train_imglist.txt"
 
-        #wall_facer.cvt_xml_json_2_txt(class_map, img_path, xywh_txt_to_create, xyxy_txt_to_create)
+        wall_facer.cvt_xml_json_2_txt(class_map, img_path, xywh_txt_to_create, xyxy_txt_to_create)
 
-        caffe_box_file = "/data/taofuyu/tao_txt/monster/monster_all_t4_taostyle_box.txt"
-        #caffe_box_file = "/data/taofuyu/tao_dataset/det_plate/gt/detect_monster_cityscapes_t3_box.txt"
-        cvt_map = {"0":"0", "1":"1", "2":"2", "3":"3", "4":"4", "5":"5", "6":"7", "7":"8"} #{cls idx in project:cls idx in README, ...}
-        wall_facer.cvt_txt_2_txt(cvt_map, img_path, caffe_box_file, xywh_txt_to_create, xyxy_txt_to_create)
+        # caffe_box_file = "/data/taofuyu/tao_txt/monster/monster_all_t4_taostyle_box.txt"
+        # #caffe_box_file = "/data/taofuyu/tao_dataset/det_plate/gt/detect_monster_cityscapes_t3_box.txt"
+        # cvt_map = {"0":"0", "1":"1", "2":"2", "3":"3", "4":"4", "5":"5", "6":"7", "7":"8"} #{cls idx in project:cls idx in README, ...}
+        # wall_facer.cvt_txt_2_txt(cvt_map, img_path, caffe_box_file, xywh_txt_to_create, xyxy_txt_to_create)
 
     ###---------- merge gt txt file ----------###
     if False:

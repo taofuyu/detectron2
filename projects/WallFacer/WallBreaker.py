@@ -5,6 +5,10 @@ main test code
 
 from detectron2.data.detection_utils import load_cfg
 from detectron2.utils.visualizer import Visualizer
+from detectron2.config import get_cfg
+from detectron2.data.detection_utils import read_image
+from adet.modeling import *
+from adet.config import *
 
 from tools.image_reader import ImageReader
 from tools.project_model import *
@@ -13,7 +17,12 @@ import cv2
 import os
 import io
 import json
-
+import shutil
+import torch
+import sys
+sys.path.append("/data/taofuyu/repos/detectron2/projects/")
+from R3 import R3_dataset_function
+from detectron2.engine.defaults import DefaultPredictor
 
 class WallBreaker:
     '''compute some metrics for given images
@@ -131,16 +140,14 @@ class WallBreaker:
         #load json
         anno = img_path.replace(img_format, 'json')
         if not os.path.exists(anno):
-            print("anno {} not exist".format(anno))
             return all_class_gt
         with io.open(anno, 'r', encoding='utf8') as f:
             data = json.loads(f.read())
         
         #load gt from json for each class
         for each_cls in self.class_to_test:
-            each_cls = each_cls.replace("stock", "") #because json file write "head"
-            for i in range(data[each_cls + '_cnt']):
-                root = data[each_cls + "_" + str(i)]
+            for i in range(data[each_cls.replace("stock", "") + '_cnt']): #because json file write "head"
+                root = data[each_cls.replace("stock", "") + "_" + str(i)]
                 xmin = root['x_min']
                 ymin = root['y_min']
                 xmax = root['x_max']
@@ -160,6 +167,10 @@ class WallBreaker:
         return all_class_gt
 
     def draw_img(self, img_path, boxes, classnames, scores):
+        if len(boxes) == 0:
+            img_name = img_path.split("/")[-1]
+            shutil.copy(img_path, os.path.join(self.save_img_path, img_name))
+            return
         src_img = cv2.imread(img_path)
         if src_img is None:
             return
@@ -206,7 +217,54 @@ class WallBreaker:
         overlap=max(0.,min(preds[2],gt[2])-max(preds[0],gt[0])+self.offset)*max(0.,min(preds[3],gt[3])-max(preds[1],gt[1])+self.offset)
         return overlap
     
+    def setup_cfg(self, test_cfg):
+        '''
+        det2 model config
+        '''
+        # load config from file and command-line arguments
+        cfg = get_cfg()
+        cfg.set_new_allowed(True)# to add new key in yaml
+        cfg.merge_from_file(test_cfg["cfg_path"])
+        cfg["MODEL"]["WEIGHTS"] = test_cfg["pth_path"]
+        cfg["MODEL"]["SOLOV2"]["SCORE_THR"] = test_cfg["conf_thr"]
+        cfg["INPUT"]["MIN_SIZE_TEST"] = test_cfg["model_input_sz"]["input_h"]
 
+        cfg.freeze()
+        return cfg
+
+    def create_model(self, cfg):
+        if cfg["caffe"]:
+            model = DetectionModel(cfg)
+        elif cfg["Pytorch"]:
+            model_cfg = self.setup_cfg(cfg)
+
+            model = DefaultPredictor(model_cfg)
+        
+        return model
+
+    def parse_pred(self, predictions):
+        boxes = []
+        classnames = []
+        scores = []
+
+        if "instances" in predictions:
+            instances = predictions["instances"].to(torch.device("cpu"))
+            mask = instances.scores > 0.5
+            instances.pred_boxes.tensor = instances.pred_boxes.tensor[mask]
+            instances.pred_classes = instances.pred_classes[mask]
+            instances.scores = instances.scores[mask]
+
+            boxes = instances.pred_boxes.tensor.tolist()
+            classnames = instances.pred_classes.tolist()
+            scores = instances.scores.tolist()
+        
+        class_map = {}
+        for i,cls in enumerate(cfg["project_class"]):
+            class_map[i] = cls
+        
+        classnames = [class_map[label] for label in classnames]
+
+        return boxes, classnames, scores
 
 if __name__ == "__main__":
     #load cfg
@@ -215,8 +273,7 @@ if __name__ == "__main__":
     wall_breaker = WallBreaker(cfg)
 
     #load model
-    #replace this for different project
-    model = DetectionModel(cfg)
+    model = wall_breaker.create_model(cfg)
 
     #read img
     image_reader = ImageReader(cfg)
@@ -232,10 +289,14 @@ if __name__ == "__main__":
                 src_img = image_reader.read_img(img)
                 src_img_shape = src_img.shape
                 if not cfg["arm_result"]:
-                    src_img = image_reader.preprocess(src_img)
-                    boxes, classnames, scores = model.run(src_img, src_img_shape)
+                    if cfg["caffe"]:
+                        src_img = image_reader.preprocess(src_img)
+                        boxes, classnames, scores = model.run(src_img, src_img_shape)
+                    elif cfg["Pytorch"]:
+                        predictions = model(src_img)
+                        boxes, classnames, scores = wall_breaker.parse_pred(predictions)
                 else:
-                    boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210303_detect_X19")
+                    boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210313_R3_Detect_quant")
                 result_on_dataset[img] = [boxes, classnames, scores, src_img_shape]
 
             #compute
@@ -250,8 +311,12 @@ if __name__ == "__main__":
             src_img = image_reader.read_img(img)
             src_img_shape = src_img.shape
 
-            src_img = image_reader.preprocess(src_img)
-            boxes, classnames, scores = model.run(src_img, src_img_shape)
+            if cfg["caffe"]:
+                src_img = image_reader.preprocess(src_img)
+                boxes, classnames, scores = model.run(src_img, src_img_shape)
+            elif cfg["Pytorch"]:
+                predictions = model(src_img)
+                boxes, classnames, scores = wall_breaker.parse_pred(predictions)
 
             wall_breaker.draw_img(img, boxes, classnames, scores)
     

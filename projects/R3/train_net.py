@@ -2,20 +2,18 @@
 # Copyright taofuyu
 
 """
-HighRoadside Training Script.
+R3 Training Script.
 
 @train:
-CUDA_VISIBLE_DEVICES=0,1,2 python train_net.py --config-file=/detectron2/projects/HighRoadside/configs/H85_train.yaml --num-gpus=3 --resume
-@test:
-CUDA_VISIBLE_DEVICES=0 python test.py --config-file=/path/H85_train.yaml --input=/path/*.jpg --output=/path/
-@compute metrics:
-TODO
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train_net.py --config-file=/data/taofuyu/models/R3/FCOS_X3.yaml --num-gpus=4 --dist-url tcp://127.0.0.1:49153 --resume
 """
 
 import os
 import shutil
 import logging
-import highroadside_model
+import sys
+sys.path.append("/data/taofuyu/repos/detectron2/projects/")
+from R3 import R3_backbone, R3_dataset
 
 from collections import OrderedDict
 import torch
@@ -26,7 +24,6 @@ from detectron2.data.dataset_mapper import BlackMagicMapper
 from detectron2.data.detection_utils import generate_atom_list
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer, PeriodicCheckpointer
-from detectron2.config import get_cfg
 from detectron2.data import (
     MetadataCatalog,
     build_detection_test_loader,
@@ -45,7 +42,7 @@ from detectron2.evaluation import (
     inference_on_dataset,
     print_csv_format,
 )
-from detectron2.modeling import build_model
+from detectron2.modeling import build_model, GeneralizedRCNNWithTTA
 from detectron2.solver import build_lr_scheduler, build_optimizer
 from detectron2.utils.events import (
     CommonMetricPrinter,
@@ -53,6 +50,10 @@ from detectron2.utils.events import (
     JSONWriter,
     TensorboardXWriter,
 )
+from adet.data.dataset_mapper import DatasetMapperWithBasis
+from adet.config import get_cfg
+from adet.checkpoint import AdetCheckpointer
+from adet.evaluation import TextEvaluator
 
 logger = logging.getLogger("detectron2")
 
@@ -176,16 +177,13 @@ def do_train(cfg, model, resume=False):
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
-            # if cfg.DATALOADER.SAVE_BLACK_MAGIC_PATH != "":
-            #     save_data_to_disk(cfg, data)
+            if cfg.DATALOADER.SAVE_BLACK_MAGIC_PATH != "":
+                save_data_to_disk(cfg, data)
             iteration = iteration + 1
             storage.step()
 
             loss_dict = model(data)
             losses = sum(loss_dict.values())
-            if not torch.isfinite(losses).all():
-                print("save ...")
-                save_data_to_disk(cfg, data)
             assert torch.isfinite(losses).all(), loss_dict
 
             loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}

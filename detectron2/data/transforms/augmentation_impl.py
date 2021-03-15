@@ -858,7 +858,7 @@ class BoxAttentionCrop(Augmentation):
         if do:
             x_min, y_min, x_max, y_max = annotations[random_idx]["bbox"]
             #left
-            if new_crop_w < x_max-x_min:
+            if new_crop_w <= x_max-x_min+1:
                 crop_left = x_min
             else:
                 random_left = max(0,int(x_max-new_crop_w))
@@ -867,10 +867,15 @@ class BoxAttentionCrop(Augmentation):
                     return NoOpTransform()
                 crop_left = random.randint(random_left, random_right)
             #top
-            if new_crop_h < y_max-y_min:
+            if new_crop_h <= y_max-y_min+1:
                 crop_top = y_min
             else:
-                crop_top = random.randint(max(0,int(y_max-new_crop_h)), min(int(y_min), int(old_img_h-new_crop_h))) 
+                tmp_top1 = max(0,int(y_max-new_crop_h))
+                tmp_top2 = min(int(y_min), int(old_img_h-new_crop_h))
+                if tmp_top1>=tmp_top2:
+                    crop_top = tmp_top2
+                else:
+                    crop_top = random.randint(tmp_top1, tmp_top2) 
         else:
             crop_left = random.randint(0, old_img_w - new_crop_w + 1)
             crop_top  = random.randint(0, old_img_h - new_crop_h + 1)
