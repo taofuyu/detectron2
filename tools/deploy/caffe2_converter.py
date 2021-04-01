@@ -35,9 +35,9 @@ if __name__ == "__main__":
         help="output format",
         default="caffe2",
     )
-    parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
+    parser.add_argument("--config-file", default="/data/taofuyu/models/R3/FCOS_X1.yaml", metavar="FILE", help="path to config file")
     parser.add_argument("--run-eval", action="store_true")
-    parser.add_argument("--output", help="output directory for the converted model")
+    parser.add_argument("--output", default="/data/taofuyu/", help="output directory for the converted model")
     parser.add_argument(
         "opts",
         help="Modify config options using the command-line",

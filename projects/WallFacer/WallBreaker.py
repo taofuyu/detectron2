@@ -20,8 +20,10 @@ import json
 import shutil
 import torch
 import sys
+import numpy as np
 sys.path.append("/data/taofuyu/repos/detectron2/projects/")
 from R3 import R3_dataset_function
+from HighRoadside.highroadside_model import *
 from detectron2.engine.defaults import DefaultPredictor
 
 class WallBreaker:
@@ -120,6 +122,28 @@ class WallBreaker:
         
         return total_num, avg_iou, avg_score, recall, error
 
+    def compute_cls_metrics(self, class_map, dataset, result_on_dataset):
+        gt_category = dataset.strip("\n").strip(" ").split("/")[-1]
+        total_img = len(result_on_dataset)
+        right_cnt = 0
+        for result in result_on_dataset:
+            pred_category = class_map[str(result_on_dataset[result])]
+            if pred_category == gt_category:
+                right_cnt += 1
+        return right_cnt, float(right_cnt) / total_img
+
+    def compute_classification_classmap(self, cfg):
+        class_name_file = cfg["class_name_file"]
+        class_map = {}
+        with open(class_name_file, "r") as f:
+            all_lines = f.readlines()
+            for i,line in enumerate(all_lines):
+                line = line.strip("\n").strip(" ")
+                class_map[str(i)] = line
+        
+        return class_map
+
+
     def get_det_gt(self, img_path, height, width):
         #init
         all_class_gt = {} # {"plate":{"box_gt":[], "count_gt":[]},   "head":{"box_gt":[], "count_gt":[]}}
@@ -193,6 +217,24 @@ class WallBreaker:
         img_name = img_path.split("/")[-1]
         vis_output.save(os.path.join(self.save_img_path, img_name))
 
+    def save_to_txt(self, img_path, result_file, boxes, classnames, scores):
+        if len(boxes) == 0:
+            return
+        
+        mapp = {"plate":"0", "headstock":"1", "tailstock":"2", "car":"3"}
+        to_write = img_path
+        for i in range(len(boxes)):
+            x_min = int(boxes[i][0])
+            y_min = int(boxes[i][1])
+            x_max = int(boxes[i][2])
+            y_max = int(boxes[i][3])
+            label = mapp[classnames[i]]
+            to_write += " {} {} {} {} {}".format(x_min, y_min, x_max, y_max, label)
+        
+        to_write += "\n"
+
+        result_file.write(to_write)
+
     def save_to_excel(self):
         pass
 
@@ -226,6 +268,7 @@ class WallBreaker:
         cfg.set_new_allowed(True)# to add new key in yaml
         cfg.merge_from_file(test_cfg["cfg_path"])
         cfg["MODEL"]["WEIGHTS"] = test_cfg["pth_path"]
+        print("using det2 weight: {}".format(cfg["MODEL"]["WEIGHTS"]))
         cfg["MODEL"]["SOLOV2"]["SCORE_THR"] = test_cfg["conf_thr"]
         cfg["INPUT"]["MIN_SIZE_TEST"] = test_cfg["model_input_sz"]["input_h"]
 
@@ -234,7 +277,12 @@ class WallBreaker:
 
     def create_model(self, cfg):
         if cfg["caffe"]:
-            model = DetectionModel(cfg)
+            if cfg["mission"] == "SSDdetection":
+                model = DetectionModel(cfg)
+            elif cfg["mission"] == "FCOSdetection":
+                model = FCOSDetectionModel(cfg)
+            elif cfg["mission"] == "classification":
+                model = ClassificationModel(cfg)
         elif cfg["Pytorch"]:
             model_cfg = self.setup_cfg(cfg)
 
@@ -266,9 +314,10 @@ class WallBreaker:
 
         return boxes, classnames, scores
 
+
 if __name__ == "__main__":
     #load cfg
-    test_cfg = "/data/taofuyu/models/dataset_config/test_R3.yaml"
+    test_cfg = "/data/taofuyu/models/dataset_config/test_FCOS.yaml"
     cfg = load_cfg(test_cfg)
     wall_breaker = WallBreaker(cfg)
 
@@ -277,9 +326,12 @@ if __name__ == "__main__":
 
     #read img
     image_reader = ImageReader(cfg)
-    
     if cfg["print_metric"]:
         child_dataset_list = image_reader.create_dataset_list()
+        if cfg["mission"] == "classification":
+            class_map = wall_breaker.compute_classification_classmap(cfg)
+            total_num = 0
+            total_right = 0
         for dataset in child_dataset_list:
             img_list = image_reader.create_img_list(dataset)
 
@@ -291,19 +343,34 @@ if __name__ == "__main__":
                 if not cfg["arm_result"]:
                     if cfg["caffe"]:
                         src_img = image_reader.preprocess(src_img)
-                        boxes, classnames, scores = model.run(src_img, src_img_shape)
+                        if cfg["mission"] in ["detection", "FCOSdetection"]:
+                            boxes, classnames, scores = model.run(src_img, src_img_shape)
+                        elif cfg["mission"] == "classification":
+                            max_class_idx = model.run(src_img, src_img_shape)
                     elif cfg["Pytorch"]:
                         predictions = model(src_img)
                         boxes, classnames, scores = wall_breaker.parse_pred(predictions)
                 else:
-                    boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210313_R3_Detect_quant")
-                result_on_dataset[img] = [boxes, classnames, scores, src_img_shape]
+                    boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210313_R3_Detect_quant")#R3 is right
+                if cfg["mission"] == "detection":
+                    result_on_dataset[img] = [boxes, classnames, scores, src_img_shape]
+                elif cfg["mission"] == "classification":
+                    result_on_dataset[img] = max_class_idx
 
             #compute
-            total_num, avg_iou, avg_score, recall, error = wall_breaker.compute_det_metrics(img_list, result_on_dataset)
-            for each_cls in cfg["test_class"]:
-                print('{}: Class: {} Total: {} Avg_IoU: {:.4f} Avg_score: {:.4f} Recall: {:.4f} Error: {:.4f}'.format(dataset, each_cls, \
-                                        total_num[each_cls], avg_iou[each_cls], avg_score[each_cls], recall[each_cls], error[each_cls]))
+            if cfg["mission"] == "detection":
+                total_num, avg_iou, avg_score, recall, error = wall_breaker.compute_det_metrics(img_list, result_on_dataset)
+                for each_cls in cfg["test_class"]:
+                    print('{}: Class: {} Total: {} Avg_IoU: {:.4f} Avg_score: {:.4f} Recall: {:.4f} Error: {:.4f}'.format(dataset, each_cls, \
+                                            total_num[each_cls], avg_iou[each_cls], avg_score[each_cls], recall[each_cls], error[each_cls]))
+            elif cfg["mission"] == "classification":
+                total_num += len(img_list)
+                right, acc = wall_breaker.compute_cls_metrics(class_map, dataset, result_on_dataset)
+                total_right += right
+                print("{} total num: {}, acc: {:.4f}".format(dataset, len(img_list), acc))
+
+        if cfg["mission"] == "classification":
+            print("total num: {}, acc: {:.4f}".format(total_num, float(total_right)/total_num))
         
     if cfg["draw_result"]:
         img_list = image_reader.create_img_list(cfg["draw_img_path"])
@@ -319,6 +386,7 @@ if __name__ == "__main__":
                 boxes, classnames, scores = wall_breaker.parse_pred(predictions)
 
             wall_breaker.draw_img(img, boxes, classnames, scores)
+            #wall_breaker.save_to_txt(img, result_file, boxes, classnames, scores)
     
     if cfg["draw_video"]:
         pass

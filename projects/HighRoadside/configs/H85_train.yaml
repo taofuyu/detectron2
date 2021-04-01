@@ -6,6 +6,7 @@ MODEL:
     IN_FEATURES: ["conv_stage1_out", "conv_stage2_out", "conv_stage3_out", "conv_stage4_out", "conv_stage5_out"]
     OUT_CHANNELS: 32
     FUSE_TYPE: "sum"
+    NORM: "BN"
   ANCHOR_GENERATOR:
     NAME: "DefaultAnchorGenerator"
     SIZES: !!python/object/apply:eval ["[[x*2, x*2 * 2**(0.5), x*4 ] for x in [4, 8, 16, 32, 64]]"]
@@ -24,8 +25,9 @@ MODEL:
     NMS_THRESH_TEST: 0.5
     TOPK_CANDIDATES_TEST: 1000
     IN_FEATURES: ["p2", "p3", "p4", "p5", "p6"]
+    NORM: "BN"
   PIXEL_MEAN: [0, 0, 0]
-  PIXEL_STD: [0.00392156862745098, 0.00392156862745098, 0.00392156862745098]
+  PIXEL_STD: [255, 255, 255]
   #WEIGHTS: "/detectron2/projects/HighRoadside/output/model_0036999.pth"
 DATASETS:
   TRAIN: ("highroadside_dataset_train",) #"mix_dataset_train", )
@@ -37,8 +39,8 @@ DATALOADER:
   BLACK_MAGIC_CFG: "/data/taofuyu/repos/detectron2/projects/HighRoadside/configs/H85_black.yaml"
   SAVE_BLACK_MAGIC_PATH: "/data/taofuyu/log/high_roadside/black_magic/"
 SOLVER:
-  IMS_PER_BATCH: 114
-  BASE_LR: 0.1
+  IMS_PER_BATCH: 6
+  BASE_LR: 0.05
   STEPS: (28750, 40000, 47500)
   MAX_ITER: 50000
   WEIGHT_DECAY: 0.0005

@@ -256,8 +256,13 @@ def parse_json(json_file, class_map):
 def get_wenxin_arm_result(item, width, height, folder_name):
     detections = {"scores":[], "classnames":[], "boxes":[]}
     real_txt = item.replace("plate_test_dataset", folder_name) + ".txt"
+    if not os.path.exists(real_txt):
+        return detections["boxes"], detections["classnames"], detections["scores"]
     with io.open(real_txt, "r", encoding="gb2312") as f:
-        all_lines = f.readlines()
+        try:
+            all_lines = f.readlines()
+        except UnicodeDecodeError:
+            all_lines = []
     plate_cnt = 0
     for line in all_lines:
         line = line.strip("\n").strip(" ")
@@ -271,7 +276,7 @@ def get_wenxin_arm_result(item, width, height, folder_name):
             
             #return to abs coor
             left = width * x_min
-            top = height * x_min
+            top = height * y_min
             right = left + w * width - 1
             bottom = top + h * height -1
 

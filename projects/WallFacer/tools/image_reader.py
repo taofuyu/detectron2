@@ -83,7 +83,7 @@ class ImageReader:
         new_img = new_img.reshape((new_img.shape[0], new_img.shape[1], self.input_c))
         new_img = new_img.astype('float')
         for c in range(self.input_c):
-            new_img[:,:,c] = (new_img[:,:,c] - self.mean[c]) * self.std[c]
+            new_img[:,:,c] = (new_img[:,:,c] - self.mean[c]) / self.std[c]
 
         assert new_img.shape[2] == self.input_c, 'img channel != model input channel'
 

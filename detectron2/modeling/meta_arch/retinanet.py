@@ -421,13 +421,13 @@ class RetinaNetHead(nn.Module):
         bbox_subnet = []
         for _ in range(num_convs):
             cls_subnet.append(
-                nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
+                nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False)
             )
             if norm:
                 cls_subnet.append(get_norm(norm, in_channels))
             cls_subnet.append(nn.ReLU())
             bbox_subnet.append(
-                nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
+                nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, bias=False)
             )
             if norm:
                 bbox_subnet.append(get_norm(norm, in_channels))
@@ -444,12 +444,14 @@ class RetinaNetHead(nn.Module):
         for modules in [self.cls_subnet, self.bbox_subnet, self.cls_score, self.bbox_pred]:
             for layer in modules.modules():
                 if isinstance(layer, nn.Conv2d):
-                    torch.nn.init.normal_(layer.weight, mean=0, std=0.01)
-                    torch.nn.init.constant_(layer.bias, 0)
+                    torch.nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')
+                    #torch.nn.init.normal_(layer.weight, mean=0, std=0.01)
+                    #torch.nn.init.constant_(layer.bias, 0)
 
         # Use prior in model initialization to improve stability
         bias_value = -(math.log((1 - prior_prob) / prior_prob))
         torch.nn.init.constant_(self.cls_score.bias, bias_value)
+        torch.nn.init.constant_(self.bbox_pred.bias, 0)
 
     def forward(self, features):
         """

@@ -14,7 +14,7 @@ import time
 from .extract_box import BoxExtractor
 
 
-__all__ = ["BaseModel", "DetectionModel"]
+__all__ = ["BaseModel", "DetectionModel", "ClassificationModel", "FCOSDetectionModel"]
 
 class BaseModel:
     def __init__(self, cfg):
@@ -88,3 +88,87 @@ class DetectionModel(BaseModel):
         boxes, classnames, scores = box_extractor.extractImageBoxes(box_data, self.project_class, src_img_shape)
 
         return boxes, classnames, scores
+
+
+class ClassificationModel(BaseModel):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        caffe.set_mode_gpu()
+
+        self.gpu_id = cfg["gpu_id"]
+        self.net = caffe.Net(self.deploy, self.weight, caffe.TEST)
+
+        #reshape input layer
+        self.net.blobs['data'].reshape(1, self.input_c, self.input_h, self.input_w)
+        self.net.reshape()
+        self.net.forward()
+        self.in_data = np.empty((1, self.input_c, self.input_h, self.input_w)).astype('float')
+        
+        print('{} initialized'.format(self.deploy))
+
+    def run(self, img, src_img_shape):
+        net_out = self.forward(img)
+        max_score_class_idx = self.post_process(net_out)
+
+        return max_score_class_idx
+    
+    def forward(self, img):
+        #load img data
+        for c in range(self.input_c):
+            self.in_data[0, c, :, :] = img[:, :, c]
+        
+        #pass data to input blob
+        caffe.set_device(self.gpu_id)
+        self.net.blobs['data'].data[...] = self.in_data[0:1,:,:,:]
+        
+        #get net result
+        net_out = self.net.forward()
+
+        return net_out
+    
+    def post_process(self, net_out):
+
+        prob_data = net_out["prob"].reshape(-1)
+        
+        max_score_class_idx = np.argmax(prob_data)
+
+        return max_score_class_idx
+
+class FCOSDetectionModel(DetectionModel):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.strides = cfg["strides"]
+        self.locations = self.compute_locations()
+        self.out_layers = cfg["out_layers"]
+
+    def post_process(self, net_out, src_img_shape):
+        num_stages = len(self.strides)
+        
+        for stage in range(num_stages):
+            logits = net_out[self.out_layers[stage]]
+            regression = net_out[self.out_layers[stage+5]]
+            ctrness = net_out[self.out_layers[stage+10]]
+
+            regression *= self.strides[stage]
+            logits *= ctrness[:,None,:,None]
+
+            mask = logits > self.conf_thr
+            logits = logits[mask]
+            regression = regression[mask]
+
+    def compute_locations(self):
+        locations = []
+
+        features_w = [self.input_w / s for s in self.strides]
+        features_h = [self.input_h / s for s in self.strides]
+
+        for i in range(len(self.strides)):
+            loc = []
+            for h in range(int(features_h[i])):
+                for w in range(int(features_w[i])):
+                    loc.append([(w+1)*self.strides[i] / 2, (h+1)*self.strides[i] / 2])
+            
+            locations.append(loc)
+        
+        return locations
+        

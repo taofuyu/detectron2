@@ -264,6 +264,7 @@ class WallFacer:
         if not os.path.exists(save_path):
             os.makedirs(save_path)
 
+        color = {"0": "red", "1": "yellow", "2": "brown", "3": "green", "4": "olive", "5": "orange", "6": "purple", "7": "cyan", "8":"blue"}
         for l in all_lines:
             img_path = l.split(" ")[0]
             image = cv2.imread(img_path)
@@ -273,7 +274,7 @@ class WallFacer:
             image = image[:, :, ::-1]
             visualizer = Visualizer(image)
 
-            box_info = l.split(" ")[1:]
+            box_info = l.strip("\n").split(" ")[1:]
             num_boxes = len(box_info) // 5
             bboxes = []
             for i in range(num_boxes): #one object
@@ -283,7 +284,7 @@ class WallFacer:
                 y_max = box_info[3 + 5*i]
                 label = box_info[4 + 5*i]
 
-                vis_output = visualizer.draw_box([float(x_min), float(y_min), float(x_max), float(y_max)])
+                vis_output = visualizer.draw_box([float(x_min), float(y_min), float(x_max), float(y_max)], alpha=1, edge_color=color[str(label)])
 
             img_name = img_path.split("/")[-1]
             vis_output.save(os.path.join(save_path, img_name))
@@ -312,13 +313,13 @@ if __name__ == "__main__":
         wall_facer.merge_train_imglist(config_file)
 
     ###---------- generate train file ----------###
-    if True:
+    if False:
         config_file = "/data/taofuyu/models/dataset_config/X20_config.yaml"
         project_class_map = {"0":"0", "1":"1", "2":"2", "3":"3"} #{cls idx in gt file:cls idx in project, ...}
         wall_facer.generate_train_imglist(config_file, project_class_map)
 
     ###---------- draw gt ----------###
-    if False:
-        draw_list = "/data/taofuyu/tao_dataset/det_plate/gt/xyxy/test_imglist.txt"
-        save_path = "/data/taofuyu/tao_dataset/det_plate/draw_gt/new_RX_wrong/"
+    if True:
+        draw_list = "/data/taofuyu/tao_dataset/high_roadside/gt/xyxy/patch_vz_roof_train_imglist.txt"
+        save_path = "/data/taofuyu/tao_dataset/high_roadside/draw_gt/"
         wall_facer.draw_to_check_gt(draw_list, save_path)
