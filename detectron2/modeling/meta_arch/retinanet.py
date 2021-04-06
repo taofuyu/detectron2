@@ -7,7 +7,7 @@ import torch
 from fvcore.nn import giou_loss, sigmoid_focal_loss_jit, smooth_l1_loss
 from torch import nn
 from torch.nn import functional as F
-
+import os
 from detectron2.data.detection_utils import convert_image_to_rgb
 from detectron2.layers import ShapeSpec, batched_nms, cat, get_norm
 from detectron2.structures import Boxes, ImageList, Instances, pairwise_iou
@@ -59,6 +59,9 @@ class RetinaNet(nn.Module):
         # Vis parameters
         self.vis_period               = cfg.VIS_PERIOD
         self.input_format             = cfg.INPUT.FORMAT
+        self.save_lebeled_anchor_path = cfg.TEST.SAVE_LABELED_ANCHOR_PATH
+        if self.save_lebeled_anchor_path and (not os.path.exists(self.save_lebeled_anchor_path)):
+            os.makedirs(self.save_lebeled_anchor_path)
         # fmt: on
 
         self.backbone = build_backbone(cfg)
@@ -172,6 +175,12 @@ class RetinaNet(nn.Module):
 
             return losses
         else:
+            if self.save_lebeled_anchor_path:
+                anchors = self.anchor_generator(features)
+                gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+                gt_labels, gt_boxes = self.label_anchors(anchors, gt_instances)
+
+                self.save_labeled_anchor(batched_inputs, anchors, gt_labels)
             results = self.inference(anchors, pred_logits, pred_anchor_deltas, images.image_sizes)
             processed_results = []
             for results_per_image, input_per_image, image_size in zip(
@@ -387,6 +396,40 @@ class RetinaNet(nn.Module):
         images = ImageList.from_tensors(images, self.backbone.size_divisibility)
         return images
 
+    def save_labeled_anchor(self, batched_inputs, anchors, gt_labels):
+        """
+        Draw gt boxes(red) and their labeled anchors(green) on img, then save to disk.
+        """
+        import cv2
+        anchors = Boxes.cat(anchors)  # Rx4
+        anchors = anchors.tensor.cpu().numpy()
+
+        for category in range(self.num_classes):
+            for image, gt_label in zip(batched_inputs, gt_labels):
+                img = image["image"].numpy()
+                img = np.ascontiguousarray(img.transpose(1,2,0))
+                
+                img_name = image["file_name"].strip("\n").split("/")[-1]
+                img_h, img_w, _ = img.shape
+
+                #draw gt
+                annos = image["annotations"]
+                for anno in annos:
+                    if anno["category_id"] == category:
+                        bbox = [int(x) for x in anno["bbox"]]
+                        cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color=(0, 0, 255), thickness=1)
+
+                #draw labeled anchor
+                mask = gt_label == category
+                labeled_anchors = anchors[mask.cpu()]
+                for anchor in labeled_anchors:
+                    left = int(max(0, anchor[0]))
+                    top = int(max(0, anchor[1]))
+                    right = int(min(img_w, anchor[2]))
+                    bottom = int(min(img_h, anchor[3]))
+                    cv2.rectangle(img, (left, top), (right, bottom), color=(0,255,0), thickness=1)
+
+                cv2.imwrite(os.path.join(self.save_lebeled_anchor_path, img_name + "_" + str(category)), img)
 
 class RetinaNetHead(nn.Module):
     """

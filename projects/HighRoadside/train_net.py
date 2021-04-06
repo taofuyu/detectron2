@@ -176,16 +176,13 @@ def do_train(cfg, model, resume=False):
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
-            # if cfg.DATALOADER.SAVE_BLACK_MAGIC_PATH != "":
-            #     save_data_to_disk(cfg, data)
+            if cfg.DATALOADER.SAVE_BLACK_MAGIC_PATH != "":
+                save_data_to_disk(cfg, data)
             iteration = iteration + 1
             storage.step()
 
             loss_dict = model(data)
             losses = sum(loss_dict.values())
-            if not torch.isfinite(losses).all():
-                print("save ...")
-                save_data_to_disk(cfg, data)
             assert torch.isfinite(losses).all(), loss_dict
 
             loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}

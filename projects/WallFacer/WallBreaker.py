@@ -287,7 +287,7 @@ class WallBreaker:
             model_cfg = self.setup_cfg(cfg)
 
             model = DefaultPredictor(model_cfg)
-        
+            #self.trace_model(model, cfg)
         return model
 
     def parse_pred(self, predictions):
@@ -314,10 +314,14 @@ class WallBreaker:
 
         return boxes, classnames, scores
 
+    def trace_model(self, model, cfg):
+        dummy_input = torch.rand(1, cfg["model_input_sz"]["input_c"], cfg["model_input_sz"]["input_h"], cfg["model_input_sz"]["input_w"])
+        smodel = torch.jit.trace(model, dummy_input)
+        smodel.save("/data/taofuyu/fcos_x5.script.pth")
 
 if __name__ == "__main__":
     #load cfg
-    test_cfg = "/data/taofuyu/models/dataset_config/test_FCOS.yaml"
+    test_cfg = "/data/taofuyu/models/dataset_config/test_H1M.yaml"
     cfg = load_cfg(test_cfg)
     wall_breaker = WallBreaker(cfg)
 
@@ -343,7 +347,7 @@ if __name__ == "__main__":
                 if not cfg["arm_result"]:
                     if cfg["caffe"]:
                         src_img = image_reader.preprocess(src_img)
-                        if cfg["mission"] in ["detection", "FCOSdetection"]:
+                        if cfg["mission"] in ["SSDdetection", "FCOSdetection"]:
                             boxes, classnames, scores = model.run(src_img, src_img_shape)
                         elif cfg["mission"] == "classification":
                             max_class_idx = model.run(src_img, src_img_shape)
@@ -352,13 +356,13 @@ if __name__ == "__main__":
                         boxes, classnames, scores = wall_breaker.parse_pred(predictions)
                 else:
                     boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210313_R3_Detect_quant")#R3 is right
-                if cfg["mission"] == "detection":
+                if cfg["mission"] == "SSDdetection":
                     result_on_dataset[img] = [boxes, classnames, scores, src_img_shape]
                 elif cfg["mission"] == "classification":
                     result_on_dataset[img] = max_class_idx
 
             #compute
-            if cfg["mission"] == "detection":
+            if cfg["mission"] == "SSDdetection":
                 total_num, avg_iou, avg_score, recall, error = wall_breaker.compute_det_metrics(img_list, result_on_dataset)
                 for each_cls in cfg["test_class"]:
                     print('{}: Class: {} Total: {} Avg_IoU: {:.4f} Avg_score: {:.4f} Recall: {:.4f} Error: {:.4f}'.format(dataset, each_cls, \

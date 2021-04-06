@@ -156,7 +156,7 @@ def mix_dataset_function(img_list):
 
 for phase in ['train', 'val']:
     DatasetCatalog.register('highroadside_dataset_' + phase, lambda phase=phase: highroadside_dataset_function(\
-                            '/data/taofuyu/tao_txt/high_roadside/det2/'+phase+'_high_roadisde_imglist.txt'))
+                            '/data/taofuyu/tao_txt/high_roadside/det2/'+phase+'_high_roadisde_imglist_only_h1m.txt'))
     MetadataCatalog.get('highroadside_dataset_' + phase).set(thing_classes=['plate','head','tail','car','side_win','win','roof','cycle'], \
                             thing_colors=['red', 'yellow', 'brown', 'green', 'olive', 'orange', 'purple', 'cyan'])
 

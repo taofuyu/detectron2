@@ -319,7 +319,7 @@ class AugInput:
             boxes (ndarray or None): Nx4 float32 boxes in XYXY_ABS mode
             sem_seg (ndarray or None): HxW uint8 semantic segmentation mask. Each element
                 is an integer label of pixel.
-            annotations (list[dict]): N anno dicts for N img
+            annotations (list[dict]): all anno for one img
         """
         _check_img_dtype(image)
         self.image = image
