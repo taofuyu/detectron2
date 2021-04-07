@@ -124,3 +124,76 @@ class Matcher(object):
         # with gt_A, but it has larger overlap with gt_B, it's matched index will still be gt_B.
         # This follows the implementation in Detectron, and is found to have no significant impact.
         match_labels[pred_inds_with_highest_quality] = 1
+
+class CommanderMatcher(Matcher):
+    def __init__(self, cfg, thresholds: List[float], labels: List[int], allow_low_quality_matches: bool = False):
+        super().__init__(thresholds, labels, allow_low_quality_matches)
+        """
+        iou supression:
+
+        """
+        self.use_iou_supression = cfg.COMMANDER.USE_IOU_SUPRESSION
+        self.iou_supression_bound = cfg.COMMANDER.IOU_SUPRESSION_BOUND
+        self.iou_supression_rate_alpha = cfg.COMMANDER.IOU_SUPRESSION_RATE_ALPHA
+        self.iou_supression_rate_beta = cfg.COMMANDER.IOU_SUPRESSION_RATE_BETA
+        self.iou_supression_rate_sigma = cfg.COMMANDER.IOU_SUPRESSION_RATE_SIGMA
+    
+    def __call__(self, match_quality_matrix):
+        """
+        Args:
+            match_quality_matrix (Tensor[float]): an MxN tensor, containing the
+                pairwise quality between M ground-truth elements and N predicted
+                elements. All elements must be >= 0 (due to the us of `torch.nonzero`
+                for selecting indices in :meth:`set_low_quality_matches_`).
+
+        Returns:
+            matches (Tensor[int64]): a vector of length N, where matches[i] is a matched
+                ground-truth index in [0, M)
+            match_labels (Tensor[int8]): a vector of length N, where pred_labels[i] indicates
+                whether a prediction is a true or false positive or ignored
+        """
+        assert match_quality_matrix.dim() == 2
+        if match_quality_matrix.numel() == 0:
+            default_matches = match_quality_matrix.new_full(
+                (match_quality_matrix.size(1),), 0, dtype=torch.int64
+            )
+            # When no gt boxes exist, we define IOU = 0 and therefore set labels
+            # to `self.labels[0]`, which usually defaults to background class 0
+            # To choose to ignore instead, can make labels=[-1,0,-1,1] + set appropriate thresholds
+            default_match_labels = match_quality_matrix.new_full(
+                (match_quality_matrix.size(1),), self.labels[0], dtype=torch.int8
+            )
+            return default_matches, default_match_labels
+
+        assert torch.all(match_quality_matrix >= 0)
+
+        # FOR EACH ANCHOR, loop all gts: max iou value is max_ious, corresponding gt-index is max_ious_gt_index
+        # finally, these anchors' label is match_labels which means anchor is pos/neg/ignore  1/0/-1.
+        # max = max * (1 - v)
+        # v = { alpha*[second/max] + beta*[(second-bound)/(max-bound)] } / (alpha + beta)
+        max_ious, max_ious_gt_index = match_quality_matrix.max(dim=0)
+        match_labels = max_ious_gt_index.new_full(max_ious_gt_index.size(), 1, dtype=torch.int8) #init
+
+        if self.use_iou_supression and (match_quality_matrix.shape[0]>1): #has at least two gts
+            # for each anchor, get top2 iou values and index
+            top2_ious, top2_ious_gt_index = torch.topk(match_quality_matrix, k=2, dim=0)
+            max_ious = top2_ious[0,:]
+            second_ious = top2_ious[1,:]
+            max_ious_gt_index = top2_ious_gt_index[0,:]
+            # if second iou >= bound, decrease max iou
+            bound_mask = second_ious >= self.iou_supression_bound
+
+            A = self.iou_supression_rate_alpha * (second_ious[bound_mask] / max_ious[bound_mask])
+            B = self.iou_supression_rate_beta  * ( (second_ious[bound_mask]-self.iou_supression_bound) / (max_ious[bound_mask]-self.iou_supression_bound) )
+            iou_supression_value = (A + B) / (self.iou_supression_rate_alpha + self.iou_supression_rate_beta)
+            max_ious[bound_mask] = max_ious[bound_mask] * (1 - iou_supression_value**self.iou_supression_rate_sigma)
+
+        for (l, low, high) in zip(self.labels, self.thresholds[:-1], self.thresholds[1:]):
+            low_high = (max_ious >= low) & (max_ious < high)
+            match_labels[low_high] = l
+
+        if self.allow_low_quality_matches:
+            self.set_low_quality_matches_(match_labels, match_quality_matrix)
+
+        return max_ious_gt_index, match_labels
+

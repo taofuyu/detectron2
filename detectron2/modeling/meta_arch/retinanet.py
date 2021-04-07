@@ -16,7 +16,7 @@ from detectron2.utils.events import get_event_storage
 from ..anchor_generator import build_anchor_generator
 from ..backbone import build_backbone
 from ..box_regression import Box2BoxTransform
-from ..matcher import Matcher
+from ..matcher import Matcher, CommanderMatcher
 from ..postprocessing import detector_postprocess
 from .build import META_ARCH_REGISTRY
 
@@ -73,7 +73,8 @@ class RetinaNet(nn.Module):
 
         # Matching and loss
         self.box2box_transform = Box2BoxTransform(weights=cfg.MODEL.RETINANET.BBOX_REG_WEIGHTS)
-        self.anchor_matcher = Matcher(
+        self.anchor_matcher = CommanderMatcher(
+            cfg,
             cfg.MODEL.RETINANET.IOU_THRESHOLDS,
             cfg.MODEL.RETINANET.IOU_LABELS,
             allow_low_quality_matches=True,

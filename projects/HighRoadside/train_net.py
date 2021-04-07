@@ -5,7 +5,7 @@
 HighRoadside Training Script.
 
 @train:
-CUDA_VISIBLE_DEVICES=0,1,2 python train_net.py --config-file=/detectron2/projects/HighRoadside/configs/H85_train.yaml --num-gpus=3 --resume
+CUDA_VISIBLE_DEVICES=0,1,2 python train_net.py --config-file=/detectron2/projects/HighRoadside/configs/H85_train.yaml --num-gpus=3 --resume --dist-url tcp://0.0.0.0:12345
 @test:
 CUDA_VISIBLE_DEVICES=0 python test.py --config-file=/path/H85_train.yaml --input=/path/*.jpg --output=/path/
 @compute metrics:
