@@ -3,9 +3,10 @@ import json
 import io
 import os
 import numpy as np
+import cv2
 
 def correct_name(name, file):
-    if name in ['plate','plate_ga','plate_z','palte','pl','l','t']:
+    if name in ['plate','plate_ga','plate_z','palte','pl','l','t','headplate']:
         name = 'plate'
         return name
     
@@ -13,7 +14,7 @@ def correct_name(name, file):
         name = 'headstock'
         return name
     
-    if name in ['tailstock','tailtock','taistock','tailstockwwwww','tailstockww', 'tailstockw']:
+    if name in ['tailstock','tailtock','taistock','tailstockwwwww','tailstockww', 'tailstockw', 'tailstockd']:
         name = 'tailstock'
         return name
     
@@ -29,9 +30,9 @@ def correct_name(name, file):
         return 'ear'
     if name in ['side_window', 's']:
         return 'side_window'
-    if name in ['window', 'w', 'eewindow', 'windoww']:
+    if name in ['window', 'w', 'eewindow', 'windoww', 'headwindow']:
         return 'window'
-    if name in ['ignore', 'ignored','ingore', 'ingroe']:
+    if name in ['ignore', 'ignored','ingore', 'ingroe', 'd']:
         return 'ignore'
     print('error name: ' + name)
     print(file)
@@ -252,6 +253,57 @@ def parse_json(json_file, class_map):
     
     return xywh_boxes, xyxy_boxes
 
+def parse_json_sim(json_file, class_map):
+    with io.open(json_file, 'r') as f:
+        json_data = json.loads(f.read())
+    
+    src_img = cv2.imread(json_file.replace("json", "jpg"))
+    if src_img is None:
+        assert(False)
+    height, width, _ = src_img.shape
+    width = float(width)
+    height = float(height)
+
+    xywh_boxes = []
+    xyxy_boxes = []
+    for label in json_data['mark_info'][0]["img_body"].keys():
+        box = []
+        name = correct_name(label, json_file)
+        if name=="ignore":
+            continue
+        
+        for bndbox in json_data['mark_info'][0]["img_body"][label]:
+            x_min = float(bndbox["xmin"])
+            y_min = float(bndbox["ymin"])
+            x_max = float(bndbox["xmax"])
+            y_max = float(bndbox["ymax"])
+
+            x_min=min(width-1.,max(0.,x_min-1.))
+            y_min=min(height-1.,max(0.,y_min-1.))
+            x_max=min(width-1.,max(0.,x_max-1.))
+            y_max=min(height-1.,max(0.,y_max-1.))
+
+            if x_min==0 and y_min==0 and x_max==0 and y_max==0:
+                print("{} has wrong label".format(json_file))
+                continue
+            if x_min<0 or y_min<0 or x_max<0 or y_max<0:
+                print("{} has wrong label".format(json_file))
+                continue
+            if x_min>x_max or y_min>y_max:
+                print("{} has wrong label".format(json_file))
+                continue
+
+            xyxy_boxes.append([int(x_min), int(y_min), int(x_max), int(y_max), class_map[name]])
+
+            box.append((x_min+x_max)*0.5/(width-1.))
+            box.append((y_min+y_max)*0.5/(height-1.))
+            box.append((x_max-x_min+1.)/(width-1.))
+            box.append((y_max-y_min+1.)/(height-1.))
+            box.append(class_map[name])
+
+            xywh_boxes.append(box)
+    
+    return xywh_boxes, xyxy_boxes
 
 def get_wenxin_arm_result(item, width, height, folder_name):
     detections = {"scores":[], "classnames":[], "boxes":[]}
@@ -293,4 +345,8 @@ def get_wenxin_arm_result(item, width, height, folder_name):
 
 
 
-
+if __name__ == '__main__':
+    img = '/data/taofuyu/65bf2fa2-4dfa7745_1614384660_2021-02-27-08-11-00_0_川A36K7Q_OUT_h264_3425.jpg'
+    label = '/data/taofuyu/65bf2fa2-4dfa7745_1614384660_2021-02-27-08-11-00_0_川A36K7Q_OUT_h264_3425.json'
+    xywh, xyxy = parse_json(label, {"plate":0, "headstock":1, "tailstock":2, "car":3, "side_window":4, "window":5, "roof":6, "person":7, "cycle":8})
+    a=0

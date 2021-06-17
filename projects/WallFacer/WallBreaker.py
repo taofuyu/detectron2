@@ -26,6 +26,18 @@ from R3 import R3_dataset_function
 from HighRoadside.highroadside_model import *
 from detectron2.engine.defaults import DefaultPredictor
 
+import mmcv
+from mmcv import Config, DictAction
+from mmcv.cnn import fuse_conv_bn
+from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
+from mmcv.runner import (get_dist_info, init_dist, load_checkpoint,
+                         wrap_fp16_model)
+
+from mmdet.apis import multi_gpu_test, single_gpu_test
+from mmdet.datasets import (build_dataloader, build_dataset,
+                            replace_ImageToTensor)
+from mmdet.models import build_detector
+
 class WallBreaker:
     '''compute some metrics for given images
     '''
@@ -170,23 +182,47 @@ class WallBreaker:
         
         #load gt from json for each class
         for each_cls in self.class_to_test:
-            for i in range(data[each_cls.replace("stock", "") + '_cnt']): #because json file write "head"
-                root = data[each_cls.replace("stock", "") + "_" + str(i)]
-                xmin = root['x_min']
-                ymin = root['y_min']
-                xmax = root['x_max']
-                ymax = root['y_max']
+            if each_cls.replace("stock", "") + '_cnt' in  data.keys():
+                for i in range(data[each_cls.replace("stock", "") + '_cnt']): #because json file write "head"
+                    root = data[each_cls.replace("stock", "") + "_" + str(i)]
+                    xmin = root['x_min']
+                    ymin = root['y_min']
+                    xmax = root['x_max']
+                    ymax = root['y_max']
 
-                w = xmax - xmin
-                h = ymax - ymin
+                    w = xmax - xmin
+                    h = ymax - ymin
 
-                xmin = (0, xmin)[xmin > 0]
-                xmax = (width-1, xmax)[xmax < width]
-                ymin = (0, ymin)[ymin > 0]
-                ymax = (height-1, ymax)[ymax < height]
+                    xmin = (0, xmin)[xmin > 0]
+                    xmax = (width-1, xmax)[xmax < width]
+                    ymin = (0, ymin)[ymin > 0]
+                    ymax = (height-1, ymax)[ymax < height]
 
-                all_class_gt[each_cls]["box_gt"].append([xmin, ymin, xmax, ymax])
-                all_class_gt[each_cls]["count_gt"].append(0)
+                    all_class_gt[each_cls]["box_gt"].append([xmin, ymin, xmax, ymax])
+                    all_class_gt[each_cls]["count_gt"].append(0)
+            else:
+                for i in range(len(data["shapes"])):
+                    root = data["shapes"][i]
+                    if root["label"] == each_cls:
+                        bndbox = root["points"]
+                        x1 = float(bndbox[0][0])
+                        y1 = float(bndbox[0][1])
+                        x2 = float(bndbox[1][0])
+                        y2 = float(bndbox[1][1])
+                        x_min = min(x1, x2)
+                        y_min = min(y1, y2)
+                        x_max = max(x1, x2)
+                        y_max = max(y1, y2)
+                        
+                        x_min=min(width-1.,max(0.,x_min-1.))
+                        y_min=min(height-1.,max(0.,y_min-1.))
+                        x_max=min(width-1.,max(0.,x_max-1.))
+                        y_max=min(height-1.,max(0.,y_max-1.))
+
+                        all_class_gt[each_cls]["box_gt"].append([x_min, y_min, x_max, y_max])
+                        all_class_gt[each_cls]["count_gt"].append(0)
+                        
+
 
         return all_class_gt
 
@@ -211,7 +247,8 @@ class WallBreaker:
             box = [x_min, y_min, x_max, y_max]
 
             vis_output = vis.draw_box(box_coord=box, alpha=1, edge_color=self.color[classnames[i]])
-            text = "{},{:.4f}".format(classnames[i], scores[i]) 
+            #text = "{},{:.4f}".format(classnames[i], scores[i]) 
+            text = ""
             vis_output = vis.draw_text(text=text, position=[x_min, max(0, y_min-5)], font_size=10, color=self.color[classnames[i]])
 
         img_name = img_path.split("/")[-1]
@@ -283,11 +320,14 @@ class WallBreaker:
                 model = FCOSDetectionModel(cfg)
             elif cfg["mission"] == "classification":
                 model = ClassificationModel(cfg)
-        elif cfg["Pytorch"]:
+        elif cfg["detectron2"]:
             model_cfg = self.setup_cfg(cfg)
-
             model = DefaultPredictor(model_cfg)
             #self.trace_model(model, cfg)
+        elif cfg["mmdetection"]:
+            return None
+        else:
+            assert(False)
         return model
 
     def parse_pred(self, predictions):
@@ -314,13 +354,109 @@ class WallBreaker:
 
         return boxes, classnames, scores
 
+    def run_mmdetection(self, cfg_file):
+        format_only = True
+        checkpoint = cfg_file["mm_pth_path"]
+        cfg = Config.fromfile(cfg_file["mm_cfg_path"])
+
+        #test_dataset = "_".join(test_dataset.split("/")[5:])
+        #cfg.data.test.ann_file = os.path.join("/data/taofuyu/tao_dataset/plate_test_dataset/coco_json", test_dataset+".json")
+
+        if cfg.get('cudnn_benchmark', False):
+            torch.backends.cudnn.benchmark = True
+        cfg.model.pretrained = None
+        if cfg.model.get('neck'):
+            if isinstance(cfg.model.neck, list):
+                for neck_cfg in cfg.model.neck:
+                    if neck_cfg.get('rfp_backbone'):
+                        if neck_cfg.rfp_backbone.get('pretrained'):
+                            neck_cfg.rfp_backbone.pretrained = None
+            elif cfg.model.neck.get('rfp_backbone'):
+                if cfg.model.neck.rfp_backbone.get('pretrained'):
+                    cfg.model.neck.rfp_backbone.pretrained = None
+
+        # in case the test dataset is concatenated
+        samples_per_gpu = 1
+        if isinstance(cfg.data.test, dict):
+            cfg.data.test.test_mode = True
+            samples_per_gpu = cfg.data.test.pop('samples_per_gpu', 1)
+            if samples_per_gpu > 1:
+                # Replace 'ImageToTensor' to 'DefaultFormatBundle'
+                cfg.data.test.pipeline = replace_ImageToTensor(
+                    cfg.data.test.pipeline)
+        elif isinstance(cfg.data.test, list):
+            for ds_cfg in cfg.data.test:
+                ds_cfg.test_mode = True
+            samples_per_gpu = max(
+                [ds_cfg.pop('samples_per_gpu', 1) for ds_cfg in cfg.data.test])
+            if samples_per_gpu > 1:
+                for ds_cfg in cfg.data.test:
+                    ds_cfg.pipeline = replace_ImageToTensor(ds_cfg.pipeline)
+
+        
+        distributed = False
+
+        # build the dataloader
+        dataset = build_dataset(cfg.data.test)
+        data_loader = build_dataloader(
+            dataset,
+            samples_per_gpu=samples_per_gpu,
+            workers_per_gpu=cfg.data.workers_per_gpu,
+            dist=distributed,
+            shuffle=False)
+
+        # build the model and load checkpoint
+        cfg.model.train_cfg = None
+        model = build_detector(cfg.model, test_cfg=cfg.get('test_cfg'))
+        fp16_cfg = cfg.get('fp16', None)
+        if fp16_cfg is not None:
+            wrap_fp16_model(model)
+        checkpoint = load_checkpoint(model, checkpoint, map_location='cpu')
+        if cfg_file["fuse_conv_bn"]:
+            model = fuse_conv_bn(model)
+        # old versions did not save class info in checkpoints, this walkaround is
+        # for backward compatibility
+        if 'CLASSES' in checkpoint.get('meta', {}):
+            model.CLASSES = checkpoint['meta']['CLASSES']
+        else:
+            model.CLASSES = dataset.CLASSES
+
+        if not distributed:
+            model = MMDataParallel(model, device_ids=[0])
+            outputs = single_gpu_test(model, data_loader, False, "", 0.5)
+
+        #convert mmdetection out style to my style
+        #outputs: one output for one img; output contains len(classes) results
+        result_on_dataset = {}
+        for img_idx, out in enumerate(outputs):
+            boxes = []
+            classnames = []
+            scores = []
+            img_path = dataset.data_infos[img_idx]["file_name"]
+            img_shape = [dataset.data_infos[img_idx]["height"], dataset.data_infos[img_idx]["width"], 3]
+            for label in range(len(out)):
+                bboxes = out[label]
+                for i in range(bboxes.shape[0]):
+                    xyxy = bboxes[i].tolist()[0:-1]
+                    score = float(bboxes[i][4])
+                    
+                    boxes.append(xyxy)
+                    classnames.append(dataset.CLASSES[label])
+                    scores.append(score)
+            
+            result_on_dataset[img_path] = [boxes, classnames, scores, img_shape]
+        
+        return result_on_dataset
+
+
+
     def trace_model(self, model, cfg):
         dummy_input = torch.rand(1, cfg["model_input_sz"]["input_c"], cfg["model_input_sz"]["input_h"], cfg["model_input_sz"]["input_w"])
         smodel = torch.jit.trace(model, dummy_input)
         smodel.save("/data/taofuyu/fcos_x5.script.pth")
 
 if __name__ == "__main__":
-    #load cfg
+    #load cfg /data/taofuyu/tao_dataset/high_roadside/test/03_20200110_083001_mp4_20200122_151732_1700.jpg
     test_cfg = "/data/taofuyu/models/dataset_config/test_H1M.yaml"
     cfg = load_cfg(test_cfg)
     wall_breaker = WallBreaker(cfg)
@@ -341,31 +477,36 @@ if __name__ == "__main__":
 
             #detection result
             result_on_dataset = {}
-            for img in img_list:
-                src_img = image_reader.read_img(img)
-                src_img_shape = src_img.shape
-                if not cfg["arm_result"]:
-                    if cfg["caffe"]:
-                        src_img = image_reader.preprocess(src_img)
-                        if cfg["mission"] in ["SSDdetection", "FCOSdetection"]:
-                            boxes, classnames, scores = model.run(src_img, src_img_shape)
-                        elif cfg["mission"] == "classification":
-                            max_class_idx = model.run(src_img, src_img_shape)
-                    elif cfg["Pytorch"]:
-                        predictions = model(src_img)
-                        boxes, classnames, scores = wall_breaker.parse_pred(predictions)
-                else:
-                    boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210313_R3_Detect_quant")#R3 is right
-                if cfg["mission"] == "SSDdetection":
-                    result_on_dataset[img] = [boxes, classnames, scores, src_img_shape]
-                elif cfg["mission"] == "classification":
-                    result_on_dataset[img] = max_class_idx
+            mm = False
+            if cfg["mmdetection"]:
+                result_on_dataset = wall_breaker.run_mmdetection(cfg)
+                mm = True
+            if not mm:
+                for img in img_list:
+                    src_img = image_reader.read_img(img)
+                    src_img_shape = src_img.shape
+                    if not cfg["arm_result"]:
+                        if cfg["caffe"]:
+                            src_img = image_reader.preprocess(src_img)
+                            if cfg["mission"] in ["SSDdetection", "FCOSdetection"]:
+                                boxes, classnames, scores = model.run(src_img, src_img_shape)
+                            elif cfg["mission"] == "classification":
+                                max_class_idx = model.run(src_img, src_img_shape)
+                            elif cfg["detectron2"]:
+                                predictions = model(src_img)
+                                boxes, classnames, scores = wall_breaker.parse_pred(predictions)
+                    else:
+                        boxes, classnames, scores = get_wenxin_arm_result(img, src_img_shape[1], src_img_shape[0], "210313_R3_Detect_quant")#R3 is right
+                    if cfg["mission"] == "SSDdetection":
+                        result_on_dataset[img] = [boxes, classnames, scores, src_img_shape]
+                    elif cfg["mission"] == "classification":
+                        result_on_dataset[img] = max_class_idx
 
             #compute
             if cfg["mission"] == "SSDdetection":
                 total_num, avg_iou, avg_score, recall, error = wall_breaker.compute_det_metrics(img_list, result_on_dataset)
                 for each_cls in cfg["test_class"]:
-                    print('{}: Class: {} Total: {} Avg_IoU: {:.4f} Avg_score: {:.4f} Recall: {:.4f} Error: {:.4f}'.format(dataset, each_cls, \
+                    print('\n{}: Class: {} Total: {} Avg_IoU: {:.4f} Avg_score: {:.4f} Recall: {:.4f} Error: {:.4f}'.format(dataset, each_cls, \
                                             total_num[each_cls], avg_iou[each_cls], avg_score[each_cls], recall[each_cls], error[each_cls]))
             elif cfg["mission"] == "classification":
                 total_num += len(img_list)
@@ -379,18 +520,27 @@ if __name__ == "__main__":
     if cfg["draw_result"]:
         img_list = image_reader.create_img_list(cfg["draw_img_path"])
         for img in img_list:
+            if cfg["mmdetection"]:
+                continue
             src_img = image_reader.read_img(img)
             src_img_shape = src_img.shape
 
             if cfg["caffe"]:
                 src_img = image_reader.preprocess(src_img)
                 boxes, classnames, scores = model.run(src_img, src_img_shape)
-            elif cfg["Pytorch"]:
+            elif cfg["detectron2"]:
                 predictions = model(src_img)
                 boxes, classnames, scores = wall_breaker.parse_pred(predictions)
 
             wall_breaker.draw_img(img, boxes, classnames, scores)
-            #wall_breaker.save_to_txt(img, result_file, boxes, classnames, scores)
+            #cv2.imwrite(os.path.join(cfg["save_img_path"], img_name), img)
+        
+        if cfg["mmdetection"]:
+            result_on_dataset = wall_breaker.run_mmdetection(cfg)
+            for img in result_on_dataset.keys():
+                boxes, classnames, scores, img_shape = result_on_dataset[img]
+                wall_breaker.draw_img(img, boxes, classnames, scores)
+
     
     if cfg["draw_video"]:
         pass

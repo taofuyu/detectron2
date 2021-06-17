@@ -3,7 +3,8 @@
 import os
 import cv2
 import random
-from tools.base_func import correct_name, cvt_to_dict_style, decode_xinjie_box, write_to_file, parse_xml, parse_json
+import json
+from tools.base_func import correct_name, cvt_to_dict_style, decode_xinjie_box, write_to_file, parse_xml, parse_json, parse_json_sim
 from detectron2.data.detection_utils import load_cfg, annotations_to_instances
 from detectron2.utils.visualizer import Visualizer
 from detectron2.structures import Instances
@@ -37,6 +38,7 @@ class WallFacer:
                 img_name = img[0:-4]
                 if (" " in img_name) or ("," in img_name):
                     print("{} or {} in image name".format(" ", ","))
+                    print(os.path.join(dir,img))
                     assert(False)
                 
                 #check gt file format
@@ -46,6 +48,7 @@ class WallFacer:
                     xywh_boxes, xyxy_boxes = parse_xml(xml_file, class_map)
                 elif os.path.exists(json_file):
                     xywh_boxes, xyxy_boxes = parse_json(json_file, class_map)
+                    #xywh_boxes, xyxy_boxes = parse_json_sim(json_file, class_map)
                 else: #no box in this img
                     xywh_file.write(os.path.join(dir, img) + "\n")
                     xyxy_file.write(os.path.join(dir, img) + "\n")
@@ -138,7 +141,10 @@ class WallFacer:
                     for i in range(int(num_imgs * merge_config["merge_list"][each_list])):
                         total_f.write(all_l[i])
 
-    def generate_train_imglist(self, config, project_class_map):
+    def get_keys(self, d, value):
+        return [k for k,v in d.items() if v == value]
+
+    def generate_train_imglist(self, config, project_class_map, raw_class_map, img_id):
         '''use train_imglist.txt in "gt" folder to generate a train file for caffe or det2
         config: config file to adjust some datasets to generate train files
         project_class_map: class index in this project. 
@@ -234,6 +240,73 @@ class WallFacer:
             
             det2_imglist.close()
 
+        if cfg["generate_coco"]:
+            to_dump_dict = {}
+            to_dump_dict["images"] = []
+            to_dump_dict["annotations"] = []
+            to_dump_dict["categories"] = []
+            print("please check category name and order !!!")
+            assert(True)
+            #order and name must equal train config "classes"
+            to_dump_dict["categories"].append({"id":0, "name": "plate"})
+            to_dump_dict["categories"].append({"id":1, "name": "headstock"})
+            to_dump_dict["categories"].append({"id":2, "name": "tailstock"})
+            to_dump_dict["categories"].append({"id":3, "name": "car"})
+            to_dump_dict["categories"].append({"id":4, "name": "side_window"})
+            to_dump_dict["categories"].append({"id":5, "name": "window"})
+            to_dump_dict["categories"].append({"id":6, "name": "roof"})
+            to_dump_dict["categories"].append({"id":7, "name": "cycle"})
+            #to_dump_dict["categories"].append({"id":8, "name": "cycle"})
+            
+            for dataset in cfg["merge_list"]:
+                print(dataset)
+                img_list_file = cfg["merge_list"][dataset][0]
+                times = cfg["merge_list"][dataset][1]
+            
+                final_lines = self.get_final_lines(img_list_file, times)
+                for img in final_lines:
+                    #img info
+                    img = img.strip("\n").strip(" ")
+                    img_path = img.split(" ")[0]
+                    img_file = img_path.split("/")[-1]
+                    img_name = img_file[0:-4]
+                    src_img = cv2.imread(img_path)
+                    if src_img is None:
+                        continue
+                    img_h, img_w, _ = src_img.shape
+
+                    to_dump_dict["images"].append({"file_name": img_path, \
+                                                   "height": img_h,\
+                                                   "width": img_w,\
+                                                   "id": img_id})
+
+                    #get gt box
+                    box_info = img.split(" ")[1:]
+                    num_boxes = len(box_info) // 5
+                    for i in range(num_boxes): #one object
+                        x_min = float(box_info[0 + 5*i])
+                        y_min = float(box_info[1 + 5*i])
+                        x_max = float(box_info[2 + 5*i])
+                        y_max = float(box_info[3 + 5*i])
+                        box_w = x_max-x_min
+                        box_h = y_max-y_min
+                        label = box_info[4 + 5*i]
+                        if not label in project_class_map.keys():
+                            continue
+                        
+                        label = int(project_class_map[label])
+
+                        to_dump_dict["annotations"].append({"iscrowd": 0,\
+                                                            "image_id": img_id,\
+                                                            "bbox": [x_min, y_min, box_w, box_h],\
+                                                            "category_id": label,\
+                                                            "id": int(len(to_dump_dict['annotations']) + 1),\
+                                                            "area": box_w*box_h})
+                    
+                    img_id += 1
+            
+            json.dump(to_dump_dict, open(cfg["coco_json_to_create"], 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+
     def get_final_lines(self, img_list_file, times):
         '''repeat or get part of img_list_file according to times
         '''
@@ -296,9 +369,9 @@ if __name__ == "__main__":
     if False:
         class_map = {"plate":0, "headstock":1, "tailstock":2, "car":3, "side_window":4, "window":5, "roof":6, "person":7, "cycle":8}
 
-        img_path = "/data/taofuyu/tao_dataset/wuxi/masked_wuxi_full_p6/"
-        xywh_txt_to_create = "/data/taofuyu/tao_dataset/wuxi/gt/xywh/masked_wuxi_full_p6_train_imglist.txt"
-        xyxy_txt_to_create = "/data/taofuyu/tao_dataset/wuxi/gt/xyxy/masked_wuxi_full_p6_train_imglist.txt"
+        img_path = "/data/taofuyu/tao_dataset/high_roadside/test/"
+        xywh_txt_to_create = "/data/taofuyu/tao_dataset/high_roadside/gt/xywh/test_imglist.txt"
+        xyxy_txt_to_create = "/data/taofuyu/tao_dataset/high_roadside/gt/xyxy/test_imglist.txt"
 
         wall_facer.cvt_xml_json_2_txt(class_map, img_path, xywh_txt_to_create, xyxy_txt_to_create)
 
@@ -313,13 +386,15 @@ if __name__ == "__main__":
         wall_facer.merge_train_imglist(config_file)
 
     ###---------- generate train file ----------###
-    if False:
-        config_file = "/data/taofuyu/models/dataset_config/X20_config.yaml"
-        project_class_map = {"0":"0", "1":"1", "2":"2", "3":"3"} #{cls idx in gt file:cls idx in project, ...}
-        wall_facer.generate_train_imglist(config_file, project_class_map)
+    if True:
+        config_file = "/data/taofuyu/models/dataset_config/track_det_config.yaml"
+        raw_class_map = {"plate":0, "headstock":1, "tailstock":2, "car":3, "side_window":4, "window":5, "roof":6, "person":7, "cycle":8}
+        project_class_map = {"0":"0","1":"1","2":"2","3":"3","4":"4","5":"5","6":"6", "8":"7"} #{cls idx in gt file:cls idx in project, ...}
+        img_id = 0
+        wall_facer.generate_train_imglist(config_file, project_class_map, raw_class_map, img_id)
 
     ###---------- draw gt ----------###
-    if True:
-        draw_list = "/data/taofuyu/tao_dataset/high_roadside/gt/xyxy/patch_vz_roof_train_imglist.txt"
+    if False:
+        draw_list = "/data/taofuyu/tao_dataset/high_roadside/gt/xyxy/patch_five_auto_train_imglist.txt"
         save_path = "/data/taofuyu/tao_dataset/high_roadside/draw_gt/"
         wall_facer.draw_to_check_gt(draw_list, save_path)
